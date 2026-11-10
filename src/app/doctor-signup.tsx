@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, fonts } from '../constants/theme';
+import { isNoInternet, isTooManyRequests, supabase } from '../lib/supabase';
 
 // IMAGE PATHS: change this line if you rename or move the image
 const LOGO = require('../../assets/images/logo.png');
@@ -39,6 +40,7 @@ export default function DoctorSignUp() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
 
   const validate = () => {
     const e: Record<string, string> = {};
@@ -52,8 +54,10 @@ export default function DoctorSignUp() {
     if (!/^\S+@\S+\.\S+$/.test(email.trim())) {
       e.email = 'Please enter a valid email address.';
     }
-    if (!/^(?=.*[A-Za-z])(?=.*\d).{8,}$/.test(password)) {
-      e.password = 'Use at least 8 characters with letters and numbers.';
+    // Same rule as Supabase: 8+ characters with a small letter,
+    // a capital letter, a number and a symbol.
+    if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/.test(password)) {
+      e.password = 'Use 8 or more characters with a small letter, a capital letter, a number and a symbol.';
     }
     if (confirm.length === 0 || confirm !== password) {
       e.confirm = 'Passwords do not match.';
@@ -63,13 +67,47 @@ export default function DoctorSignUp() {
     return Object.keys(e).length === 0;
   };
 
-  const handleSignUp = () => {
-    if (validate()) {
-      Alert.alert(
-        'Form looks good!',
-        'Your account will be created once Supabase is connected.'
-      );
+  const handleSignUp = async () => {
+    if (loading || !validate()) return;
+
+    setLoading(true);
+    const cleanEmail = email.trim().toLowerCase();
+    const { data, error } = await supabase.auth.signUp({
+      email: cleanEmail,
+      password,
+      options: {
+        data: {
+          role: 'doctor',
+          full_name: fullName.trim(),
+          specialization: specialization.trim(),
+        },
+      },
+    });
+    setLoading(false);
+
+    if (error) {
+      if (isTooManyRequests(error)) {
+        Alert.alert('Please wait', 'Too many tries. Please wait a moment and try again.');
+      } else if (isNoInternet(error)) {
+        Alert.alert('No internet', 'Please check your internet connection and try again.');
+      } else if (error.code === 'weak_password') {
+        setErrors({ password: 'This password is too weak. Please choose a stronger one.' });
+      } else if (error.code === 'user_already_exists' || error.code === 'email_exists') {
+        Alert.alert('Account found', 'This email already has an account. Please log in.');
+      } else {
+        Alert.alert('Something went wrong', 'We could not create your account. Please try again.');
+      }
+      return;
     }
+
+    // Supabase gives no error for an email that is already confirmed.
+    // Instead, the user comes back with an empty "identities" list.
+    if (data.user?.identities?.length === 0) {
+      Alert.alert('Account found', 'This email already has an account. Please log in.');
+      return;
+    }
+
+    router.push({ pathname: '/otp', params: { email: cleanEmail } });
   };
 
   return (
@@ -168,7 +206,13 @@ export default function DoctorSignUp() {
                   />
                 </Pressable>
               </View>
-              {errors.password && <Text style={styles.errorText}>{errors.password}</Text>}
+              {errors.password ? (
+                <Text style={styles.errorText}>{errors.password}</Text>
+              ) : (
+                <Text style={styles.hintText}>
+                  Use a small letter, a capital letter, a number and a symbol (like ! or @).
+                </Text>
+              )}
 
               <Text style={styles.label}>CONFIRM PASSWORD</Text>
               <View style={[styles.inputRow, errors.confirm && styles.inputError]}>
@@ -194,10 +238,15 @@ export default function DoctorSignUp() {
             </View>
 
             <Pressable
-              style={({ pressed }) => [styles.button, pressed && styles.pressed]}
+              style={({ pressed }) => [
+                styles.button,
+                loading && styles.buttonBusy,
+                pressed && styles.pressed,
+              ]}
               onPress={handleSignUp}
+              disabled={loading}
             >
-              <Text style={styles.buttonText}>CREATE ACCOUNT</Text>
+              <Text style={styles.buttonText}>{loading ? 'PLEASE WAIT…' : 'CREATE ACCOUNT'}</Text>
             </Pressable>
 
             <Pressable
@@ -298,6 +347,12 @@ const styles = StyleSheet.create({
     color: ERROR,
     marginTop: 4,
   },
+  hintText: {
+    fontFamily: fonts.regular,
+    fontSize: 12,
+    color: colors.muted,
+    marginTop: 4,
+  },
   button: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -308,6 +363,7 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.orangeDark,
     marginTop: 22,
   },
+  buttonBusy: { opacity: 0.7 },
   buttonText: {
     fontFamily: fonts.bold,
     fontSize: 17,
