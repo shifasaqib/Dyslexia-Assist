@@ -52,10 +52,8 @@ export default function Login() {
 
   const handleLogin = () => {
     if (validate()) {
-      Alert.alert(
-        'Form looks good!',
-        'Login will work once Supabase is connected.'
-      );
+      // TEMPORARY (for testing the Scan screen only): remove when real login is built in Step 3
+      router.push('/scan');
     }
   };
 
