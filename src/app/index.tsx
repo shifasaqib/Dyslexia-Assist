@@ -5,6 +5,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Animated, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, fonts } from '../constants/theme';
+import { getHomeRoute, type HomeRoute } from '../lib/auth';
+import { supabase } from '../lib/supabase';
 
 // IMAGE PATHS: change these lines if you rename or move the images
 const LOGO = require('../../assets/images/logo.png');
@@ -19,10 +21,43 @@ const WORD_PAUSE = 350; // small pause between the two words
 
 const OUTLINE = [[-2, 0], [2, 0], [0, -2], [0, 2], [-2, -2], [2, -2], [-2, 2], [2, 2]];
 
+// Is someone already logged in on this phone? If yes, which home screen?
+// Returns null when there is no (working) saved login.
+async function findSavedHome(): Promise<HomeRoute | null> {
+  try {
+    const { data } = await supabase.auth.getSession();
+    if (!data.session) return null;
+
+    const route = await getHomeRoute(data.session.user.id);
+    if (!route) {
+      // Old or broken login: clear it from this phone only.
+      await supabase.auth.signOut({ scope: 'local' });
+    }
+    return route;
+  } catch {
+    return null;
+  }
+}
+
 export default function Splash() {
   const router = useRouter();
   const [typed, setTyped] = useState(0);
   const [ready, setReady] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+
+  // Start the saved-login check quietly while the animation plays.
+  const savedHome = useRef<Promise<HomeRoute | null> | null>(null);
+  useEffect(() => {
+    savedHome.current = findSavedHome();
+  }, []);
+
+  const handleContinue = async () => {
+    if (leaving) return;
+    setLeaving(true);
+    // Waits for the check if it is still running, so a fast tap is never wrong.
+    const route = await (savedHome.current ?? findSavedHome());
+    router.replace(route ?? '/onboarding1');
+  };
 
   const logoAnim = useRef(new Animated.Value(0)).current;
   const restAnim = useRef(new Animated.Value(0)).current;
@@ -107,7 +142,8 @@ export default function Splash() {
           >
             <Pressable
               style={({ pressed }) => [styles.button, pressed && styles.pressed]}
-              onPress={() => router.replace('/onboarding1')}
+              onPress={handleContinue}
+              disabled={leaving}
             >
               <Text style={styles.buttonText}>CONTINUE</Text>
               <Ionicons name="arrow-forward" size={22} color={colors.brown} />

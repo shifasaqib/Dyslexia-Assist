@@ -1,5 +1,4 @@
 import 'react-native-url-polyfill/auto';
-<<<<<<< HEAD
 import { AuthError, createClient, isAuthRetryableFetchError, processLock } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
 import { AppState } from 'react-native';
@@ -86,66 +85,14 @@ export function isTooManyRequests(error: AuthError) {
   );
 }
 
+// True only when the phone could not reach Supabase at all (status 0).
+// Server problems (500, 502 ...) are NOT "no internet".
 export function isNoInternet(error: AuthError) {
-  return isAuthRetryableFetchError(error);
-}
-=======
-import { createClient } from '@supabase/supabase-js';
-import * as SecureStore from 'expo-secure-store';
-import { AppState } from 'react-native';
-
-// Public values only, read from .env (never put secret keys here)
-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  throw new Error('Supabase URL or key is missing. Check the .env file and restart with --clear.');
+  return isAuthRetryableFetchError(error) && !error.status;
 }
 
-// Secure Store likes small items, so the session is saved in small pieces
-const PIECE_SIZE = 1800;
-
-const removeItem = async (key: string) => {
-  const count = await SecureStore.getItemAsync(`${key}_count`);
-  for (let i = 0; i < Number(count ?? 0); i++) {
-    await SecureStore.deleteItemAsync(`${key}_${i}`);
-  }
-  await SecureStore.deleteItemAsync(`${key}_count`);
-};
-
-const getItem = async (key: string) => {
-  const count = await SecureStore.getItemAsync(`${key}_count`);
-  if (!count) return null;
-  let value = '';
-  for (let i = 0; i < Number(count); i++) {
-    const piece = await SecureStore.getItemAsync(`${key}_${i}`);
-    if (piece === null) return null;
-    value += piece;
-  }
-  return value;
-};
-
-const setItem = async (key: string, value: string) => {
-  await removeItem(key);
-  const count = Math.ceil(value.length / PIECE_SIZE);
-  for (let i = 0; i < count; i++) {
-    await SecureStore.setItemAsync(`${key}_${i}`, value.slice(i * PIECE_SIZE, (i + 1) * PIECE_SIZE));
-  }
-  await SecureStore.setItemAsync(`${key}_count`, String(count));
-};
-
-export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: {
-    storage: { getItem, setItem, removeItem },
-    autoRefreshToken: true,
-    persistSession: true,
-    detectSessionInUrl: false,
-  },
-});
-
-// Refresh the session only while the app is open on screen
-AppState.addEventListener('change', (state) => {
-  if (state === 'active') supabase.auth.startAutoRefresh();
-  else supabase.auth.stopAutoRefresh();
-});
->>>>>>> origin/marium-work
+// True when Supabase answered, but had a problem on its side
+// (for example the email could not be sent).
+export function isServerError(error: AuthError) {
+  return (error.status ?? 0) >= 500;
+}

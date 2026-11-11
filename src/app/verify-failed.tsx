@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, fonts } from '../constants/theme';
-import { isNoInternet, isTooManyRequests, supabase } from '../lib/supabase';
+import { isNoInternet, isServerError, isTooManyRequests, supabase } from '../lib/supabase';
 
 // IMAGE PATHS: change these lines if you rename or move the images
 const LOGO = require('../../assets/images/logo.png');
@@ -32,6 +32,8 @@ export default function VerifyFailed() {
         Alert.alert('Please wait', 'Please wait a moment before asking for a new code.');
       } else if (isNoInternet(error)) {
         Alert.alert('No internet', 'Please check your internet connection and try again.');
+      } else if (isServerError(error)) {
+        Alert.alert('Please try later', 'We could not send the email right now. Please try again in a few minutes.');
       } else {
         Alert.alert('Something went wrong', 'We could not send a new code. Please try again.');
       }
