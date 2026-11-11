@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, fonts } from '../constants/theme';
-import { isNoInternet, isTooManyRequests, supabase } from '../lib/supabase';
+import { isNoInternet, isServerError, isTooManyRequests, supabase } from '../lib/supabase';
 
 // IMAGE PATHS: change this line if you rename or move the image
 const LOGO = require('../../assets/images/logo.png');
@@ -28,6 +28,11 @@ const PLACEHOLDER = '#8A9AAA';
 const ERROR = '#D93025';
 const CARD_BORDER = '#FFE08A';
 const LINK_BLUE = '#1E6FB8';
+
+// Names: English letters and spaces, plus . ' - (for "Dr. Ali", "O'Neil").
+// Must start with a letter.
+const NAME_RULE = /^[A-Za-z][A-Za-z .'-]*$/;
+const cleanName = (text: string) => text.trim().replace(/\s+/g, ' ');
 
 export default function DoctorSignUp() {
   const router = useRouter();
@@ -45,8 +50,11 @@ export default function DoctorSignUp() {
   const validate = () => {
     const e: Record<string, string> = {};
 
-    if (fullName.trim().length === 0) {
+    const name = cleanName(fullName);
+    if (name.length === 0) {
       e.fullName = 'Please enter your full name.';
+    } else if (!NAME_RULE.test(name)) {
+      e.fullName = 'Name can only have letters.';
     }
     if (specialization.trim().length === 0) {
       e.specialization = 'Please enter your specialization.';
@@ -78,7 +86,7 @@ export default function DoctorSignUp() {
       options: {
         data: {
           role: 'doctor',
-          full_name: fullName.trim(),
+          full_name: cleanName(fullName),
           specialization: specialization.trim(),
         },
       },
@@ -90,6 +98,8 @@ export default function DoctorSignUp() {
         Alert.alert('Please wait', 'Too many tries. Please wait a moment and try again.');
       } else if (isNoInternet(error)) {
         Alert.alert('No internet', 'Please check your internet connection and try again.');
+      } else if (isServerError(error)) {
+        Alert.alert('Please try later', 'We could not send the email right now. Please try again in a few minutes.');
       } else if (error.code === 'weak_password') {
         setErrors({ password: 'This password is too weak. Please choose a stronger one.' });
       } else if (error.code === 'user_already_exists' || error.code === 'email_exists') {

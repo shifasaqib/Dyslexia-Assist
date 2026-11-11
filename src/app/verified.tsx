@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, fonts } from '../constants/theme';
+import { getHomeRoute } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 
 // IMAGE PATHS: change these lines if you rename or move the images
@@ -25,14 +26,36 @@ export default function Verified() {
     if (busy) return;
     setBusy(true);
 
-    // Home screens are not built yet, so sign out (only on this phone)
-    // and send the user to Login for now.
-    await supabase.auth.signOut({ scope: 'local' });
-    setBusy(false);
+    try {
+      // After the code is verified, the user is already logged in.
+      const { data } = await supabase.auth.getSession();
+      if (!data.session) {
+        Alert.alert('Please log in', 'Please log in to continue.', [
+          { text: 'OK', onPress: () => router.replace('/login') },
+        ]);
+        return;
+      }
 
-    Alert.alert('Coming soon', 'Your home screen is coming soon! Please log in.', [
-      { text: 'OK', onPress: () => router.replace('/login') },
-    ]);
+      // Role check: doctor or parent? (comes from the database)
+      let route;
+      try {
+        route = await getHomeRoute(data.session.user.id);
+      } catch {
+        Alert.alert('No internet', 'Could not connect. Please check your internet and try again.');
+        return;
+      }
+
+      if (!route) {
+        await supabase.auth.signOut({ scope: 'local' });
+        Alert.alert('Account not found', 'Account not found. Please sign up.');
+        return;
+      }
+
+      // replace: Back will not return to the OTP screens
+      router.replace(route);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (

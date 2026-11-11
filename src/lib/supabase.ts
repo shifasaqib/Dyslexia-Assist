@@ -85,6 +85,14 @@ export function isTooManyRequests(error: AuthError) {
   );
 }
 
+// True only when the phone could not reach Supabase at all (status 0).
+// Server problems (500, 502 ...) are NOT "no internet".
 export function isNoInternet(error: AuthError) {
-  return isAuthRetryableFetchError(error);
+  return isAuthRetryableFetchError(error) && !error.status;
+}
+
+// True when Supabase answered, but had a problem on its side
+// (for example the email could not be sent).
+export function isServerError(error: AuthError) {
+  return (error.status ?? 0) >= 500;
 }

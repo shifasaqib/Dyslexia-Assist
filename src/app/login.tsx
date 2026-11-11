@@ -16,6 +16,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, fonts } from '../constants/theme';
+import { getHomeRoute } from '../lib/auth';
+import { isNoInternet, isServerError, isTooManyRequests, supabase } from '../lib/supabase';
 
 // IMAGE PATHS: change this line if you rename or move the image
 const LOGO = require('../../assets/images/logo.png');
@@ -35,6 +37,7 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
 
   const validate = () => {
     const e: Record<string, string> = {};
@@ -50,15 +53,87 @@ export default function Login() {
     return Object.keys(e).length === 0;
   };
 
-  const handleLogin = () => {
-    if (validate()) {
-      // TEMPORARY (for testing the Scan screen only): remove when real login is built in Step 3
-      router.push('/scan');
+  const handleLogin = async () => {
+    if (loading || !validate()) return;
+
+    setLoading(true);
+    const cleanEmail = email.trim().toLowerCase();
+
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
+      });
+
+      if (error) {
+        if (isTooManyRequests(error)) {
+          Alert.alert('Please wait', 'Too many tries. Please wait a few minutes and try again.');
+        } else if (isNoInternet(error)) {
+          Alert.alert('No internet', 'Could not connect. Please check your internet and try again.');
+        } else if (error.code === 'email_not_confirmed') {
+          askToVerify(cleanEmail);
+        } else if (error.code === 'invalid_credentials' || error.status === 400) {
+          // Same message for wrong email and wrong password (do not say which one).
+          Alert.alert('Try again', 'Incorrect email or password.');
+        } else if (isServerError(error)) {
+          Alert.alert('Please try later', 'Something went wrong on our side. Please try again in a few minutes.');
+        } else {
+          Alert.alert('Something went wrong', 'Please try again.');
+        }
+        return;
+      }
+
+      // Role check: doctor or parent? (comes from the database)
+      let route;
+      try {
+        route = await getHomeRoute(data.user.id);
+      } catch {
+        await supabase.auth.signOut({ scope: 'local' });
+        Alert.alert('No internet', 'Could not connect. Please check your internet and try again.');
+        return;
+      }
+
+      if (!route) {
+        await supabase.auth.signOut({ scope: 'local' });
+        Alert.alert('Account not found', 'Account not found. Please sign up.');
+        return;
+      }
+
+      // replace: Back will not return to Login
+      router.replace(route);
+    } finally {
+      setLoading(false);
     }
   };
 
+  // Email is not verified yet: offer to send a new code and open the OTP screen.
+  const askToVerify = (cleanEmail: string) => {
+    Alert.alert('Not verified yet', 'Please verify your email first.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Send Code',
+        onPress: async () => {
+          const { error } = await supabase.auth.resend({ type: 'signup', email: cleanEmail });
+          if (error) {
+            if (isTooManyRequests(error)) {
+              Alert.alert('Please wait', 'Please wait a moment before asking for a new code.');
+            } else if (isNoInternet(error)) {
+              Alert.alert('No internet', 'Please check your internet connection and try again.');
+            } else if (isServerError(error)) {
+              Alert.alert('Please try later', 'We could not send the email right now. Please try again in a few minutes.');
+            } else {
+              Alert.alert('Something went wrong', 'We could not send a new code. Please try again.');
+            }
+            return;
+          }
+          router.push({ pathname: '/otp', params: { email: cleanEmail } });
+        },
+      },
+    ]);
+  };
+
   const handleForgot = () => {
-    Alert.alert('Forgot password', 'Password reset will work once Supabase is connected.');
+    Alert.alert('Coming soon', 'Password reset is coming soon.');
   };
 
   return (
@@ -140,10 +215,15 @@ export default function Login() {
             </View>
 
             <Pressable
-              style={({ pressed }) => [styles.button, pressed && styles.pressed]}
+              style={({ pressed }) => [
+                styles.button,
+                loading && styles.buttonBusy,
+                pressed && !loading && styles.pressed,
+              ]}
               onPress={handleLogin}
+              disabled={loading}
             >
-              <Text style={styles.buttonText}>LOGIN</Text>
+              <Text style={styles.buttonText}>{loading ? 'PLEASE WAIT…' : 'LOGIN'}</Text>
             </Pressable>
 
             <Pressable
@@ -267,6 +347,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     color: colors.brown,
   },
+  buttonBusy: { opacity: 0.7 },
   pressed: { transform: [{ translateY: 2 }], opacity: 0.9 },
   forgot: {
     alignSelf: 'center',
