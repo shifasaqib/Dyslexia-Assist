@@ -2,6 +2,13 @@
 // Gets a photo (or PDF) from the app, asks OCR.space to read it, and sends back the text.
 // The OCR.space key comes from Supabase Secrets. It is never inside the app.
 
+declare const Deno: {
+  env: {
+    get(key: string): string | undefined;
+  };
+  serve: (handler: (req: Request) => Response | Promise<Response>) => void;
+};
+
 const OCR_URL = 'https://api.ocr.space/parse/image';
 const MAX_BASE64_LENGTH = 1_360_000; // about 1 MB file (OCR.space free limit)
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'application/pdf'];
