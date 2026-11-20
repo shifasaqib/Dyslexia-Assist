@@ -15,6 +15,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, fonts } from '../constants/theme';
 import { supabase } from '../lib/supabase';
+import { EasyReadText, useReadingSettings } from './reading-settings';
 
 // IMAGE PATHS: change this line if you rename or move the image
 const LOGO = require('../../assets/images/logo.png');
@@ -83,6 +84,8 @@ export default function Result() {
   const [message, setMessage] = useState('');
 
   const showingSimple = mode === 'simple' && simpleText !== '';
+  // The chosen child's font and spacing (display only)
+  const readingSettings = useReadingSettings();
 
   // Send the text to our "simplify" server function and keep the simple version
   const handleSimplify = async () => {
@@ -207,7 +210,10 @@ export default function Result() {
           {hasText && (
             <View style={styles.card}>
               {showingSimple && <Text style={styles.aiNote}>{AI_NOTE}</Text>}
-              <Text style={styles.readingText}>{showingSimple ? simpleText : originalText}</Text>
+              <EasyReadText
+                text={showingSimple ? simpleText : originalText}
+                settings={readingSettings}
+              />
             </View>
           )}
 
@@ -262,15 +268,6 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     paddingVertical: 22,
     paddingHorizontal: 20,
-  },
-  // Dyslexia-friendly text: big, extra letter and line spacing, left aligned
-  readingText: {
-    fontFamily: fonts.regular,
-    fontSize: 20,
-    lineHeight: 34,
-    letterSpacing: 0.6,
-    color: colors.navy,
-    textAlign: 'left',
   },
   button: {
     flexDirection: 'row',
