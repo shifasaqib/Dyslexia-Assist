@@ -8,6 +8,7 @@ import { colors, fonts } from '../constants/theme';
 import { logOut } from '../lib/auth';
 import { avatarFor, clearChosenChild, getChosenChild } from '../lib/child';
 import { supabase } from '../lib/supabase';
+import { loadReadingSettings } from './reading-settings';
 
 // IMAGE PATHS: change this line if you rename or move the image
 const LOGO = require('../../assets/images/logo.png');
@@ -47,6 +48,10 @@ export default function ParentHome() {
       if (data) {
         setName(data.name);
         setAvatar(data.avatar);
+        // Load this child's reading settings once, for all reading screens
+        loadReadingSettings(childId).catch(() => {
+          // reading screens will use the defaults
+        });
       }
     })();
   }, []);
@@ -71,6 +76,12 @@ export default function ParentHome() {
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
           <View style={styles.topRow}>
             <Image source={LOGO} style={styles.logo} resizeMode="contain" />
+            <Pressable
+              style={({ pressed }) => [styles.gear, pressed && styles.pressed]}
+              onPress={() => router.push('/reading-settings')}
+            >
+              <Ionicons name="settings" size={26} color={colors.brown} />
+            </Pressable>
           </View>
 
           {avatar && (
@@ -142,6 +153,18 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   logo: { width: 100, height: 82 },
+  gear: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#FFC933',
+    borderWidth: 2,
+    borderColor: colors.yellow,
+    borderBottomWidth: 5,
+    borderBottomColor: colors.orangeDark,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   buddyCircle: {
     alignSelf: 'center',
     width: 110,

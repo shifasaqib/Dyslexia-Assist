@@ -31,6 +31,9 @@ export default function RootLayout() {
     Lexend_400Regular,
     Lexend_600SemiBold,
     Lexend_700Bold,
+    // Reading font (OFL licence), used only for reading text
+    OpenDyslexic_Regular: require('open-dyslexic/ttf/OpenDyslexic-Regular.ttf'),
+    OpenDyslexic_Bold: require('open-dyslexic/ttf/OpenDyslexic-Bold.ttf'),
   });
 
   if (!loaded) return null;
