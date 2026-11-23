@@ -28,11 +28,15 @@ const LOGO = require('../../assets/images/logo.png');
 
 export type ReadingFont = 'Lexend' | 'OpenDyslexic';
 
+// Read-aloud speed (Feature 5): 0 = Slow, 1 = Normal, 2 = Fast
+export type SpeechSpeed = 0 | 1 | 2;
+
 export type ReadingSettings = {
   font: ReadingFont;
   textSize: number;
   letterSpacing: number;
   lineSpacing: number;
+  speechSpeed: SpeechSpeed;
 };
 
 export const DEFAULT_SETTINGS: ReadingSettings = {
@@ -40,7 +44,21 @@ export const DEFAULT_SETTINGS: ReadingSettings = {
   textSize: 18,
   letterSpacing: 0.5,
   lineSpacing: 1.5,
+  speechSpeed: 1,
 };
+
+// The 3 read-aloud speeds (shared by the reading screen and this settings screen).
+// rate = how fast the voice reads (1 = normal speed)
+export const SPEED_OPTIONS: {
+  value: SpeechSpeed;
+  label: string;
+  rate: number;
+  note: string;
+}[] = [
+  { value: 0, label: 'Slow', rate: 0.75, note: '0.75x' },
+  { value: 1, label: 'Normal', rate: 1.0, note: '1x' },
+  { value: 2, label: 'Fast', rate: 1.25, note: '1.25x' },
+];
 
 const FONT_OPTIONS: { value: ReadingFont; label: string; family: string }[] = [
   { value: 'Lexend', label: 'Lexend', family: fonts.bold },
@@ -70,7 +88,12 @@ type SettingsRow = {
   text_size: number | null;
   letter_spacing: number | string | null;
   line_spacing: number | string | null;
+  speech_speed: number | null;
 };
+
+// Only 0, 1 or 2 are allowed; anything else becomes Normal
+const toSpeechSpeed = (value: unknown): SpeechSpeed =>
+  value === 0 || value === 1 || value === 2 ? value : DEFAULT_SETTINGS.speechSpeed;
 
 const fromRow = (row: SettingsRow): ReadingSettings => ({
   font: row.font === 'OpenDyslexic' ? 'OpenDyslexic' : 'Lexend',
@@ -81,6 +104,7 @@ const fromRow = (row: SettingsRow): ReadingSettings => ({
     DEFAULT_SETTINGS.letterSpacing
   ),
   lineSpacing: closest(row.line_spacing, LINE_OPTIONS, DEFAULT_SETTINGS.lineSpacing),
+  speechSpeed: toSpeechSpeed(row.speech_speed),
 });
 
 // Small shared memory: the settings are loaded ONCE per chosen child
@@ -100,7 +124,7 @@ export async function loadReadingSettings(childId: string): Promise<ReadingSetti
 
   const { data, error } = await supabase
     .from('reading_settings')
-    .select('font, text_size, letter_spacing, line_spacing')
+    .select('font, text_size, letter_spacing, line_spacing, speech_speed')
     .eq('child_id', childId)
     .maybeSingle();
   if (error) throw error;
@@ -110,7 +134,7 @@ export async function loadReadingSettings(childId: string): Promise<ReadingSetti
   return settings;
 }
 
-// Save the 4 settings for this child. "upsert" also creates the row
+// Save the settings for this child. "upsert" also creates the row
 // for older children that were made before the automatic trigger existed.
 export async function saveReadingSettings(childId: string, settings: ReadingSettings) {
   const { error } = await supabase.from('reading_settings').upsert(
@@ -120,11 +144,24 @@ export async function saveReadingSettings(childId: string, settings: ReadingSett
       text_size: settings.textSize,
       letter_spacing: settings.letterSpacing,
       line_spacing: settings.lineSpacing,
+      speech_speed: settings.speechSpeed,
     },
     { onConflict: 'child_id' }
   );
   if (error) throw error;
   setCache(childId, settings);
+}
+
+// Save ONLY the read-aloud speed (font and spacing stay as they are).
+// Used when the child taps Slow / Normal / Fast on the reading screen.
+export async function saveSpeechSpeed(childId: string, speechSpeed: SpeechSpeed) {
+  const { error } = await supabase
+    .from('reading_settings')
+    .upsert({ child_id: childId, speech_speed: speechSpeed }, { onConflict: 'child_id' });
+  if (error) throw error;
+  if (cache?.childId === childId) {
+    setCache(childId, { ...cache.settings, speechSpeed });
+  }
 }
 
 // Hook for reading screens: gives the chosen child's settings
@@ -196,10 +233,28 @@ export function makeChunks(text: string): string[][] {
   return chunks;
 }
 
-export function EasyReadText({ text, settings }: { text: string; settings: ReadingSettings }) {
+export function EasyReadText({
+  text,
+  settings,
+  highlightWord,
+}: {
+  text: string;
+  settings: ReadingSettings;
+  // Optional (read aloud): number of the word being spoken (0 = first word). It gets a yellow background.
+  highlightWord?: number | null;
+}) {
   const { fontScale } = useWindowDimensions();
   const [boxWidth, setBoxWidth] = useState(0);
   const chunks = useMemo(() => makeChunks(text), [text]);
+  // Number of the first word in each chunk (to find the word to highlight)
+  const chunkStarts = useMemo(() => {
+    let count = 0;
+    return chunks.map((words) => {
+      const start = count;
+      count += words.length;
+      return start;
+    });
+  }, [chunks]);
 
   const scale = Math.min(fontScale, MAX_TEXT_SCALE);
   const shownSize = settings.textSize * scale;
@@ -231,7 +286,11 @@ export function EasyReadText({ text, settings }: { text: string; settings: Readi
             {words.map((word, w) => (
               <Text
                 key={w}
-                style={[easyStyles.word, wordStyle]}
+                style={[
+                  easyStyles.word,
+                  wordStyle,
+                  highlightWord === chunkStarts[c] + w && easyStyles.spoken,
+                ]}
                 maxFontSizeMultiplier={MAX_TEXT_SCALE}
                 android_hyphenationFrequency="none"
                 textBreakStrategy="simple"
@@ -249,6 +308,8 @@ export function EasyReadText({ text, settings }: { text: string; settings: Readi
 const easyStyles = StyleSheet.create({
   chunk: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start' },
   word: { color: colors.navy, textAlign: 'left' },
+  // The word being read aloud
+  spoken: { backgroundColor: colors.yellow, borderRadius: 6, overflow: 'hidden' },
 });
 
 /* =====================================================================
@@ -443,6 +504,25 @@ export default function ReadingSettingsScreen() {
                     <Ionicons name="reorder-three" size={24} color={colors.navy} />
                     <Text numberOfLines={1} style={styles.optionSmall}>
                       {value.toFixed(1)}×
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+
+              {/* Reading speed (read aloud) */}
+              <Text style={styles.sectionTitle}>Reading speed</Text>
+              <View style={styles.row}>
+                {SPEED_OPTIONS.map((o) => (
+                  <Pressable
+                    key={o.value}
+                    style={optionStyle(draft.speechSpeed === o.value)}
+                    onPress={() => change({ speechSpeed: o.value })}
+                  >
+                    <Text numberOfLines={1} adjustsFontSizeToFit style={styles.optionText}>
+                      {o.label}
+                    </Text>
+                    <Text numberOfLines={1} style={styles.optionSmall}>
+                      {o.note}
                     </Text>
                   </Pressable>
                 ))}
