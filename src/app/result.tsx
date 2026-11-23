@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -14,9 +14,23 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, fonts } from '../constants/theme';
+import {
+  pauseReading,
+  resumeReading,
+  SpeechStatus,
+  startReading,
+  stopReading,
+} from '../lib/speech';
 import { supabase } from '../lib/supabase';
+import { getChosenChild } from '../lib/child';
 import { useWordBreakdown } from '../lib/syllables';
-import { EasyReadText, useReadingSettings } from './reading-settings';
+import {
+  EasyReadText,
+  saveSpeechSpeed,
+  SPEED_OPTIONS,
+  SpeechSpeed,
+  useReadingSettings,
+} from './reading-settings';
 
 // IMAGE PATHS: change this line if you rename or move the image
 const LOGO = require('../../assets/images/logo.png');
@@ -28,6 +42,8 @@ const CARD_BORDER = '#FFE08A';
 const NOT_ANSWERING = 'The simplify service is not answering. Please try again.';
 const AI_NOTE = 'Made simpler by AI. Ask a grown-up if something looks wrong.';
 const NO_TEXT = 'No text yet. Scan a page first.';
+const VOICE_NOT_READY =
+  "Your phone's reading voice isn't ready. Please check your phone's text-to-speech settings.";
 
 // A line that ends like this finishes a sentence (or a heading like "Ans:" or "[6]")
 const SENTENCE_END = /[.!?:;\])"”]$/;
@@ -72,6 +88,17 @@ const cleanAiText = (raw: string) =>
 
 type Mode = 'original' | 'simple';
 
+// Which word (0 = first word) is at this position in the text.
+// Words are counted the same way the reading card shows them (split by spaces).
+const wordNumberAt = (text: string, charIndex: number) => {
+  let number = -1;
+  for (const match of text.matchAll(/\S+/g)) {
+    if ((match.index ?? 0) > charIndex) break;
+    number += 1;
+  }
+  return Math.max(number, 0);
+};
+
 export default function Result() {
   const router = useRouter();
   // Real text sent from the Scan screen (after OCR)
@@ -85,13 +112,66 @@ export default function Result() {
   const [message, setMessage] = useState('');
 
   const showingSimple = mode === 'simple' && simpleText !== '';
+  const shownText = showingSimple ? simpleText : originalText;
   // The chosen child's font and spacing (display only)
   const readingSettings = useReadingSettings();
   // Tap a word: syllable popup + save to difficult_words
   const words = useWordBreakdown(readingSettings);
 
+  // Read aloud: idle / playing / paused
+  const [readStatus, setReadStatus] = useState<SpeechStatus>('idle');
+  // Position of the word being spoken (null = nothing highlighted)
+  const [spokenChar, setSpokenChar] = useState<number | null>(null);
+  const highlightWord = useMemo(
+    () => (spokenChar === null ? null : wordNumberAt(shownText, spokenChar)),
+    [spokenChar, shownText]
+  );
+
+  // Read-aloud speed: the child's saved speed, until they tap another one here
+  const [pickedSpeed, setPickedSpeed] = useState<SpeechSpeed | null>(null);
+  const speechSpeed = pickedSpeed ?? readingSettings.speechSpeed;
+
+  const changeSpeed = async (next: SpeechSpeed) => {
+    stopReading(); // the next READ TO ME uses the new speed
+    setPickedSpeed(next);
+    setMessage('');
+
+    // Remember this speed for the chosen child (next time reading starts at this speed)
+    try {
+      const childId = await getChosenChild();
+      if (childId) await saveSpeechSpeed(childId, next);
+    } catch {
+      setMessage('We could not save the speed right now.');
+    }
+  };
+
+  // Stop reading when the child leaves this screen
+  useEffect(() => () => stopReading(), []);
+
+  const handleReadAloud = () => {
+    setMessage('');
+    // How fast to read: Slow 0.75 / Normal 1 / Fast 1.25
+    const rate = SPEED_OPTIONS.find((o) => o.value === speechSpeed)?.rate ?? 1.0;
+    startReading(
+      shownText,
+      {
+        onStatus: setReadStatus,
+        onWord: setSpokenChar,
+        onError: (errorMessage) => setMessage(errorMessage ?? VOICE_NOT_READY),
+        onNotice: setMessage, // e.g. "Using phone voice." when Azure is not available
+      },
+      { rate, speed: speechSpeed } // rate for the phone voice, speed level for Azure
+    );
+  };
+
+  const changeMode = (next: Mode) => {
+    stopReading();
+    setMode(next);
+  };
+
   // Send the text to our "simplify" server function and keep the simple version
   const handleSimplify = async () => {
+    stopReading();
     setMessage('');
     setSimplifying(true);
     try {
@@ -185,7 +265,7 @@ export default function Result() {
             <View style={styles.switchRow}>
               <Pressable
                 style={[styles.switchOption, mode === 'original' && styles.switchActive]}
-                onPress={() => setMode('original')}
+                onPress={() => changeMode('original')}
               >
                 <Text
                   style={[styles.switchText, mode === 'original' && styles.switchTextActive]}
@@ -195,7 +275,7 @@ export default function Result() {
               </Pressable>
               <Pressable
                 style={[styles.switchOption, mode === 'simple' && styles.switchActive]}
-                onPress={() => setMode('simple')}
+                onPress={() => changeMode('simple')}
               >
                 <Text style={[styles.switchText, mode === 'simple' && styles.switchTextActive]}>
                   SIMPLE
@@ -203,6 +283,77 @@ export default function Result() {
               </Pressable>
             </View>
           )}
+
+          {hasText && (
+            <View style={styles.speedRow}>
+              {SPEED_OPTIONS.map((o) => (
+                <Pressable
+                  key={o.value}
+                  style={({ pressed }) => [
+                    styles.speedOption,
+                    speechSpeed === o.value && styles.speedSelected,
+                    pressed && styles.pressed,
+                  ]}
+                  onPress={() => changeSpeed(o.value)}
+                >
+                  <Text numberOfLines={1} adjustsFontSizeToFit style={styles.speedText}>
+                    {o.label}
+                  </Text>
+                  <Text numberOfLines={1} style={styles.speedNote}>
+                    {o.note}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+
+          {hasText &&
+            (readStatus === 'loading' ? (
+              <View style={[styles.button, styles.readButton]}>
+                <ActivityIndicator color={colors.brown} />
+                <Text style={styles.buttonText}>Getting the voice ready...</Text>
+              </View>
+            ) : readStatus === 'idle' ? (
+              <Pressable
+                style={({ pressed }) => [styles.button, styles.readButton, pressed && styles.pressed]}
+                onPress={handleReadAloud}
+              >
+                <Ionicons name="volume-high" size={22} color={colors.brown} />
+                <Text style={styles.buttonText}>READ TO ME</Text>
+              </Pressable>
+            ) : (
+              <View style={styles.readRow}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.button,
+                    styles.halfButton,
+                    pressed && styles.pressed,
+                  ]}
+                  onPress={readStatus === 'playing' ? pauseReading : resumeReading}
+                >
+                  <Ionicons
+                    name={readStatus === 'playing' ? 'pause' : 'play'}
+                    size={22}
+                    color={colors.brown}
+                  />
+                  <Text style={styles.buttonText}>
+                    {readStatus === 'playing' ? 'PAUSE' : 'PLAY'}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.button,
+                    styles.halfButton,
+                    styles.whiteButton,
+                    pressed && styles.pressed,
+                  ]}
+                  onPress={stopReading}
+                >
+                  <Ionicons name="stop" size={22} color={colors.navy} />
+                  <Text style={[styles.buttonText, styles.whiteButtonText]}>STOP</Text>
+                </Pressable>
+              </View>
+            ))}
 
           {message !== '' && (
             <View style={styles.messageBox}>
@@ -214,9 +365,10 @@ export default function Result() {
             <View style={styles.card}>
               {showingSimple && <Text style={styles.aiNote}>{AI_NOTE}</Text>}
               <EasyReadText
-                text={showingSimple ? simpleText : originalText}
+                text={shownText}
                 settings={readingSettings}
                 onWordPress={words.onWordPress}
+                highlightWord={highlightWord}
               />
             </View>
           )}
@@ -289,6 +441,35 @@ const styles = StyleSheet.create({
   },
   pressed: { transform: [{ translateY: 2 }], opacity: 0.9 },
   simplifyButton: { marginTop: 0, marginBottom: 16 },
+  readButton: { marginTop: 0, marginBottom: 16 },
+  speedRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  speedOption: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    borderRadius: 18,
+    backgroundColor: colors.white,
+    borderWidth: 2,
+    borderColor: colors.white,
+    borderBottomWidth: 5,
+    borderBottomColor: colors.whiteShadow,
+  },
+  speedSelected: {
+    backgroundColor: colors.orange,
+    borderColor: colors.yellow,
+    borderBottomColor: colors.orangeDark,
+  },
+  speedText: { fontFamily: fonts.bold, fontSize: 15, color: colors.navy },
+  speedNote: { fontFamily: fonts.semiBold, fontSize: 11, color: colors.navy, marginTop: 2 },
+  readRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
+  halfButton: { flex: 1, marginTop: 0 },
+  whiteButton: {
+    backgroundColor: colors.white,
+    borderBottomColor: colors.whiteShadow,
+  },
+  whiteButtonText: { color: colors.navy },
   switchRow: {
     flexDirection: 'row',
     alignSelf: 'center',
