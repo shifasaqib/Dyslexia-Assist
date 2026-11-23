@@ -196,10 +196,29 @@ export function makeChunks(text: string): string[][] {
   return chunks;
 }
 
-export function EasyReadText({ text, settings }: { text: string; settings: ReadingSettings }) {
+export function EasyReadText({
+  text,
+  settings,
+  onWordPress,
+}: {
+  text: string;
+  settings: ReadingSettings;
+  // Optional: tap a word (word, its number in the whole text). Not set = words are not tappable.
+  onWordPress?: (word: string, index: number) => void;
+}) {
   const { fontScale } = useWindowDimensions();
   const [boxWidth, setBoxWidth] = useState(0);
   const chunks = useMemo(() => makeChunks(text), [text]);
+  // Where each chunk starts in the whole text, so every word keeps one number
+  // (ready for read-aloud highlighting)
+  const chunkStarts = useMemo(() => {
+    let count = 0;
+    return chunks.map((words) => {
+      const start = count;
+      count += words.length;
+      return start;
+    });
+  }, [chunks]);
 
   const scale = Math.min(fontScale, MAX_TEXT_SCALE);
   const shownSize = settings.textSize * scale;
@@ -228,17 +247,21 @@ export function EasyReadText({ text, settings }: { text: string; settings: Readi
             key={c}
             style={[easyStyles.chunk, c < chunks.length - 1 && { marginBottom: chunkGap }]}
           >
-            {words.map((word, w) => (
-              <Text
-                key={w}
-                style={[easyStyles.word, wordStyle]}
-                maxFontSizeMultiplier={MAX_TEXT_SCALE}
-                android_hyphenationFrequency="none"
-                textBreakStrategy="simple"
-              >
-                {word}
-              </Text>
-            ))}
+            {words.map((word, w) => {
+              const index = chunkStarts[c] + w;
+              return (
+                <Text
+                  key={index}
+                  style={[easyStyles.word, wordStyle]}
+                  maxFontSizeMultiplier={MAX_TEXT_SCALE}
+                  android_hyphenationFrequency="none"
+                  textBreakStrategy="simple"
+                  onPress={onWordPress ? () => onWordPress(word, index) : undefined}
+                >
+                  {word}
+                </Text>
+              );
+            })}
           </View>
         ))}
       </View>

@@ -15,6 +15,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, fonts } from '../constants/theme';
 import { supabase } from '../lib/supabase';
+import { useWordBreakdown } from '../lib/syllables';
 import { EasyReadText, useReadingSettings } from './reading-settings';
 
 // IMAGE PATHS: change this line if you rename or move the image
@@ -86,6 +87,8 @@ export default function Result() {
   const showingSimple = mode === 'simple' && simpleText !== '';
   // The chosen child's font and spacing (display only)
   const readingSettings = useReadingSettings();
+  // Tap a word: syllable popup + save to difficult_words
+  const words = useWordBreakdown(readingSettings);
 
   // Send the text to our "simplify" server function and keep the simple version
   const handleSimplify = async () => {
@@ -213,6 +216,7 @@ export default function Result() {
               <EasyReadText
                 text={showingSimple ? simpleText : originalText}
                 settings={readingSettings}
+                onWordPress={words.onWordPress}
               />
             </View>
           )}
@@ -225,6 +229,7 @@ export default function Result() {
             <Text style={styles.buttonText}>SCAN ANOTHER PAGE</Text>
           </Pressable>
         </ScrollView>
+        {words.popup}
       </SafeAreaView>
     </LinearGradient>
   );
