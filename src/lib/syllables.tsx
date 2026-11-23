@@ -1,8 +1,10 @@
-import { useRef, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
-import { readingFontFamily, type ReadingSettings } from '../app/reading-settings';
+import { Ionicons } from '@expo/vector-icons';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { readingFontFamily, type ReadingSettings, SPEED_OPTIONS } from '../app/reading-settings';
 import { colors, fonts } from '../constants/theme';
 import { getChosenChild } from './child';
+import { pauseReading, speakWord } from './speech';
 import { supabase } from './supabase';
 
 /* =====================================================================
@@ -138,6 +140,8 @@ export function checkSyllables() {
 const PART_COLORS = [colors.title, '#1E88D9', colors.doctorGreen, colors.orangeDark, '#8E5BD9'];
 const CARD_BORDER = '#FFE08A';
 const OVERLAY = 'rgba(11, 42, 74, 0.55)';
+// The word is said at the Slow read-aloud speed
+const SLOW_RATE = SPEED_OPTIONS.find((o) => o.value === 0)?.rate ?? 0.75;
 
 function WordPopup({
   word,
@@ -151,8 +155,33 @@ function WordPopup({
   const split = word ? splitSyllables(word) : null;
   const count = split?.parts.length ?? 0;
 
+  // 🔊 voice for this word (Azure first, phone voice as backup)
+  const [voiceLoading, setVoiceLoading] = useState(false);
+  const stopVoiceRef = useRef<(() => void) | null>(null);
+
+  const stopVoice = () => {
+    stopVoiceRef.current?.();
+    stopVoiceRef.current = null;
+    setVoiceLoading(false);
+  };
+
+  // A second tap restarts the word (the old voice is stopped first)
+  const handleSpeak = () => {
+    if (!split) return;
+    stopVoice();
+    stopVoiceRef.current = speakWord(split.word, { rate: SLOW_RATE, onLoading: setVoiceLoading });
+  };
+
+  const handleClose = () => {
+    stopVoice();
+    onClose();
+  };
+
+  // A new word (or the popup going away) stops the old word's voice
+  useEffect(() => () => stopVoice(), [word]);
+
   return (
-    <Modal visible={split !== null} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={split !== null} transparent animationType="fade" onRequestClose={handleClose}>
       <View style={popupStyles.overlay}>
         <View style={popupStyles.card}>
           {split && (
@@ -182,15 +211,29 @@ function WordPopup({
 
               <Text style={popupStyles.count}>{count === 1 ? '1 part' : `${count} parts`}</Text>
 
-              {/* TODO (Marium, read-aloud): add the speak button here.
-                  It should say split.word slowly with the speech helper. */}
+              <View style={popupStyles.buttonRow}>
+                {/* 🔊 say the word slowly (spinner while Azure loads) */}
+                <Pressable
+                  style={({ pressed }) => [popupStyles.speak, pressed && popupStyles.pressed]}
+                  onPress={handleSpeak}
+                  accessibilityLabel="Say the word"
+                >
+                  {voiceLoading ? (
+                    <ActivityIndicator color={colors.brown} />
+                  ) : (
+                    <Ionicons name="volume-high" size={30} color={colors.brown} />
+                  )}
+                </Pressable>
 
-              <Pressable
-                style={({ pressed }) => [popupStyles.button, pressed && popupStyles.pressed]}
-                onPress={onClose}
-              >
-                <Text style={popupStyles.buttonText}>CLOSE</Text>
-              </Pressable>
+                <Pressable
+                  style={({ pressed }) => [popupStyles.button, pressed && popupStyles.pressed]}
+                  onPress={handleClose}
+                >
+                  <Text style={popupStyles.buttonText}>CLOSE</Text>
+                </Pressable>
+              </View>
+
+              {voiceLoading && <Text style={popupStyles.loadingText}>Getting the voice ready…</Text>}
             </>
           )}
         </View>
@@ -221,6 +264,8 @@ export function useWordBreakdown(settings: ReadingSettings) {
   };
 
   const onWordPress = (word: string) => {
+    // If the page is being read aloud, pause it (it keeps its place for PLAY)
+    pauseReading();
     setTapped(word);
     const clean = cleanWord(word);
     if (!clean || savedThisVisit.current.has(clean)) return;
@@ -264,8 +309,27 @@ const popupStyles = StyleSheet.create({
     color: colors.navy,
     marginTop: 14,
   },
-  button: {
+  buttonRow: {
     alignSelf: 'stretch',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 24,
+  },
+  speak: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#FFC933',
+    borderWidth: 2,
+    borderColor: colors.yellow,
+    borderBottomWidth: 5,
+    borderBottomColor: colors.orangeDark,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  button: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 16,
@@ -273,7 +337,12 @@ const popupStyles = StyleSheet.create({
     backgroundColor: colors.orange,
     borderBottomWidth: 6,
     borderBottomColor: colors.orangeDark,
-    marginTop: 24,
+  },
+  loadingText: {
+    fontFamily: fonts.semiBold,
+    fontSize: 13,
+    color: colors.muted,
+    marginTop: 10,
   },
   pressed: { transform: [{ translateY: 2 }], opacity: 0.9 },
   buttonText: {

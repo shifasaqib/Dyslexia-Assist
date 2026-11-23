@@ -442,3 +442,119 @@ export function stopReading() {
     callbacks?.onStatus('idle');
   }
 }
+
+/* =====================================================================
+   4. SAY ONE WORD (the 🔊 button in the syllable popup)
+   Completely separate from the page reading: it has its own player and
+   never stops, resets or changes the page reading.
+   Azure first (Slow), phone voice if Azure fails or takes over 3 seconds.
+   ===================================================================== */
+
+const WORD_AZURE_WAIT_MS = 3000;
+let wordTry = 0; // every new word (or stop) gets a new number, late answers are ignored
+let wordPlayer: AudioPlayer | null = null;
+let wordOnPhone = false; // true while the phone voice is saying the word
+
+const stopWordVoice = () => {
+  if (wordPlayer) {
+    try {
+      wordPlayer.pause();
+      wordPlayer.remove();
+    } catch {
+      // already removed
+    }
+    wordPlayer = null;
+  }
+  if (wordOnPhone) {
+    wordOnPhone = false;
+    Speech.stop();
+  }
+};
+
+// Say one word slowly. Returns stop(): call it to stop this word's voice.
+export function speakWord(
+  word: string,
+  options: { rate: number; onLoading?: (loading: boolean) => void }
+): () => void {
+  stopWordVoice();
+  wordTry += 1;
+  const myTry = wordTry;
+
+  const loading = (value: boolean) => {
+    try {
+      options.onLoading?.(value);
+    } catch {
+      // the popup may already be closed
+    }
+  };
+
+  // Phone voice (backup, or when the switch says "device")
+  const phoneVoice = () => {
+    if (myTry !== wordTry) return;
+    loading(false);
+    try {
+      wordOnPhone = true;
+      Speech.speak(word, {
+        rate: options.rate,
+        onDone: () => {
+          if (myTry === wordTry) wordOnPhone = false;
+        },
+        onError: () => {
+          if (myTry === wordTry) wordOnPhone = false;
+        },
+      });
+    } catch (e) {
+      wordOnPhone = false;
+      console.log('Word voice failed:', e);
+    }
+  };
+
+  const stop = () => {
+    if (myTry !== wordTry) return; // a newer word already took over
+    wordTry += 1;
+    loading(false);
+    stopWordVoice();
+  };
+
+  if (ENGINE !== 'azure') {
+    phoneVoice();
+    return stop;
+  }
+
+  loading(true);
+  (async () => {
+    try {
+      // Play even when an iPhone is on silent mode (same setup as the page reading)
+      if (!audioModeReady) {
+        await setAudioModeAsync({ playsInSilentMode: true });
+        audioModeReady = true;
+      }
+
+      const { data, error } = await Promise.race([
+        supabase.functions.invoke('tts', { body: { text: word, speed: 0 } }), // 0 = Slow
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Azure took too long')), WORD_AZURE_WAIT_MS)
+        ),
+      ]);
+      if (myTry !== wordTry) return; // stopped or a newer word while loading
+
+      if (error || typeof data?.audioUrl !== 'string') {
+        phoneVoice();
+        return;
+      }
+
+      loading(false);
+      const player = createAudioPlayer({ uri: data.audioUrl });
+      wordPlayer = player;
+      player.addListener('playbackStatusUpdate', (playback) => {
+        if (playback.didJustFinish && wordPlayer === player) stopWordVoice();
+      });
+      player.play();
+    } catch (e) {
+      console.log('Azure word voice not used:', String(e));
+      phoneVoice();
+    }
+  })();
+
+  return stop;
+}
