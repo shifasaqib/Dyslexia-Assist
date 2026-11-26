@@ -116,7 +116,8 @@ export default function Result() {
   // The chosen child's font and spacing (display only)
   const readingSettings = useReadingSettings();
   // Tap a word: syllable popup + save to difficult_words
-  const words = useWordBreakdown(readingSettings);
+  // Tap a word: popup + save it (and its exact sentence) as a difficult word
+  const words = useWordBreakdown(readingSettings, shownText);
 
   // Read aloud: idle / playing / paused
   const [readStatus, setReadStatus] = useState<SpeechStatus>('idle');
@@ -167,6 +168,12 @@ export default function Result() {
   const changeMode = (next: Mode) => {
     stopReading();
     setMode(next);
+  };
+
+  // Fill the Gap: 5 questions from THIS page only (the text on screen now)
+  const openPractice = () => {
+    stopReading();
+    router.push({ pathname: '/fill-blanks', params: { text: shownText } });
   };
 
   // Send the text to our "simplify" server function and keep the simple version
@@ -371,6 +378,16 @@ export default function Result() {
                 highlightWord={highlightWord}
               />
             </View>
+          )}
+
+          {hasText && (
+            <Pressable
+              style={({ pressed }) => [styles.button, pressed && styles.pressed]}
+              onPress={openPractice}
+            >
+              <Ionicons name="create" size={22} color={colors.brown} />
+              <Text style={styles.buttonText}>PRACTISE THIS PAGE</Text>
+            </Pressable>
           )}
 
           <Pressable

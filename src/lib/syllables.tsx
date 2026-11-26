@@ -242,13 +242,51 @@ function WordPopup({
   );
 }
 
+// Fill-in-the-Blanks (Marium): find the EXACT sentence of the page that the tapped word is in.
+// wordNumber = the word's number in the whole text (0 = first word), as EasyReadText sends it.
+// The sentence is copied from the text as it is (nothing is changed or made up).
+// Returns null if it cannot be found, or if the word is not really inside it.
+export function sentenceAt(text: string, wordNumber: number, clean: string): string | null {
+  // Where the tapped word starts and ends in the text
+  let count = -1;
+  let start = -1;
+  let end = -1;
+  for (const match of text.matchAll(/\S+/g)) {
+    count += 1;
+    if (count === wordNumber) {
+      start = match.index ?? 0;
+      end = start + match[0].length;
+      break;
+    }
+  }
+  if (start < 0) return null;
+
+  // Back to the start of the sentence (just after . ! ? or a new line)
+  let from = start;
+  while (from > 0 && !/[.!?\n]/.test(text[from - 1])) from -= 1;
+
+  // Forward to the end of the sentence (. ! ? and any closing quote/bracket, or a new line)
+  let to = start;
+  while (to < text.length && !/[.!?\n]/.test(text[to])) to += 1;
+  while (to < text.length && /[.!?"”'’)\]]/.test(text[to])) to += 1;
+  if (to < end) to = end;
+
+  const sentence = text.slice(from, to).trim();
+  if (sentence === '' || sentence.length > 500) return null;
+
+  // Safety check: the tapped word must really be one of the sentence's words
+  const sentenceWords = sentence.split(/\s+/).map(cleanWord);
+  return sentenceWords.includes(clean) ? sentence : null;
+}
+
 // Hook for the reading screen: gives onWordPress for EasyReadText and the popup.
 // Each word is saved only once per visit. Saving never blocks the child.
-export function useWordBreakdown(settings: ReadingSettings) {
+// text = the page text on screen (used to save the exact sentence for Fill-in-the-Blanks).
+export function useWordBreakdown(settings: ReadingSettings, text?: string) {
   const [tapped, setTapped] = useState<string | null>(null);
   const savedThisVisit = useRef(new Set<string>());
 
-  const saveWord = async (clean: string) => {
+  const saveWord = async (clean: string, sentence: string | null) => {
     try {
       const childId = await getChosenChild();
       if (!childId) return;
@@ -257,20 +295,32 @@ export function useWordBreakdown(settings: ReadingSettings) {
         p_word: clean,
       });
       // Not saved: allow it to be saved on the next tap
-      if (error) savedThisVisit.current.delete(clean);
+      if (error) {
+        savedThisVisit.current.delete(clean);
+        return;
+      }
+      // Fill-in-the-Blanks: also keep the exact sentence (a failure here never bothers the child)
+      if (sentence) {
+        await supabase.rpc('save_word_sentence', {
+          p_child_id: childId,
+          p_word: clean,
+          p_sentence: sentence,
+        });
+      }
     } catch {
       savedThisVisit.current.delete(clean);
     }
   };
 
-  const onWordPress = (word: string) => {
+  const onWordPress = (word: string, index?: number) => {
     // If the page is being read aloud, pause it (it keeps its place for PLAY)
     pauseReading();
     setTapped(word);
     const clean = cleanWord(word);
     if (!clean || savedThisVisit.current.has(clean)) return;
     savedThisVisit.current.add(clean);
-    saveWord(clean);
+    const sentence = text && index !== undefined ? sentenceAt(text, index, clean) : null;
+    saveWord(clean, sentence);
   };
 
   const popup = <WordPopup word={tapped} settings={settings} onClose={() => setTapped(null)} />;
