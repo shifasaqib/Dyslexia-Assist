@@ -247,6 +247,9 @@ function WordPopup({
 export function useWordBreakdown(settings: ReadingSettings) {
   const [tapped, setTapped] = useState<string | null>(null);
   const savedThisVisit = useRef(new Set<string>());
+  // Every word tapped on this page (cleaned, in tap order, no duplicates).
+  // Used by the Spelling Check after reading.
+  const tappedThisVisit = useRef<string[]>([]);
 
   const saveWord = async (clean: string) => {
     try {
@@ -268,6 +271,9 @@ export function useWordBreakdown(settings: ReadingSettings) {
     pauseReading();
     setTapped(word);
     const clean = cleanWord(word);
+    if (clean && !tappedThisVisit.current.includes(clean)) {
+      tappedThisVisit.current.push(clean);
+    }
     if (!clean || savedThisVisit.current.has(clean)) return;
     savedThisVisit.current.add(clean);
     saveWord(clean);
@@ -275,7 +281,9 @@ export function useWordBreakdown(settings: ReadingSettings) {
 
   const popup = <WordPopup word={tapped} settings={settings} onClose={() => setTapped(null)} />;
 
-  return { onWordPress, popup };
+  const getTappedWords = () => [...tappedThisVisit.current];
+
+  return { onWordPress, popup, getTappedWords };
 }
 
 const popupStyles = StyleSheet.create({

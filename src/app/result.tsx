@@ -373,6 +373,23 @@ export default function Result() {
             </View>
           )}
 
+          {hasText && (
+            <Pressable
+              style={({ pressed }) => [styles.button, pressed && styles.pressed]}
+              onPress={() => {
+                // Stop the page voice, then open the spelling check with the tapped words
+                stopReading();
+                router.push({
+                  pathname: '/spelling-check',
+                  params: { words: JSON.stringify(words.getTappedWords()), text: shownText },
+                });
+              }}
+            >
+              <Ionicons name="checkmark-done" size={22} color={colors.brown} />
+              <Text style={styles.buttonText}>I'M DONE READING</Text>
+            </Pressable>
+          )}
+
           <Pressable
             style={({ pressed }) => [styles.button, pressed && styles.pressed]}
             onPress={() => router.back()}
