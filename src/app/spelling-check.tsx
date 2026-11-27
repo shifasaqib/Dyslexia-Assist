@@ -17,14 +17,16 @@ import { getChosenChild } from '../lib/child';
 import { speakWord } from '../lib/speech';
 import { supabase } from '../lib/supabase';
 import { cleanWord } from '../lib/syllables';
-import { readingFontFamily, SPEED_OPTIONS, useReadingSettings } from './reading-settings';
+import { readingFontFamily, SLOW_SPEED, useReadingSettings } from './reading-settings';
 
 /* =====================================================================
    1. SMALL LOGIC FUNCTIONS (our own rules, no outside services)
    ===================================================================== */
 
 const MIN_LETTERS = 4; // "frog" is allowed, "cat" is skipped
-const MAX_QUESTIONS = 5; // ask up to 5 words
+const MAX_PRACTICE = 10; // words added to practice: all of them are tested (up to 10)
+const MAX_QUESTIONS = 5; // otherwise ask 5 words
+const PAGE_MIN_LETTERS = 5; // page words used to fill up must have 5+ letters
 const ONLY_LETTERS = /^[a-z]+$/;
 
 // Clean words that are good for a spelling question
@@ -39,11 +41,19 @@ const goodWords = (list: string[]) => {
   return result;
 };
 
-// Which words to ask (up to 5): the tapped words first,
-// then fill up with the longest words on the page
-export function pickWords(tapped: string[], text: string): string[] {
+// Which words to ask (only words from THIS page):
+//  a) words added to practice -> all of them (up to 10)
+//  b) otherwise the tapped words (up to 5), filled up to 5 with the
+//     longest page words (5+ letters, no duplicates)
+//  c) nothing tapped -> the 5 longest page words (5+ letters)
+export function pickWords(practice: string[], tapped: string[], text: string): string[] {
+  const added = goodWords(practice).slice(0, MAX_PRACTICE);
+  if (added.length > 0) return added;
+
   const chosen = goodWords(tapped).slice(0, MAX_QUESTIONS);
-  const longest = goodWords(text.split(/\s+/)).sort((a, b) => b.length - a.length);
+  const longest = goodWords(text.split(/\s+/))
+    .filter((word) => word.length >= PAGE_MIN_LETTERS)
+    .sort((a, b) => b.length - a.length);
   for (const word of longest) {
     if (chosen.length >= MAX_QUESTIONS) break;
     if (!chosen.includes(word)) chosen.push(word);
@@ -102,17 +112,15 @@ export const starsFor = (percent: number) =>
    2. SPELLING CHECK SCREEN
    ===================================================================== */
 
-// TODO: change to Marium's fill-in-the-blanks screen later
-const NEXT_SCREEN = '/parent-home';
+// After the spelling check comes Fill the Gap (it shows the final result for both)
+const NEXT_SCREEN = '/fill-blanks';
 const GAME_TYPE = 'reading_check_spelling';
-const SLOW_RATE = SPEED_OPTIONS.find((o) => o.value === 0)?.rate ?? 0.75;
 
 // IMAGE PATHS: change this line if you rename or move the image
 const LOGO = require('../../assets/images/logo.png');
 
 const OUTLINE = [[-2, 0], [2, 0], [0, -2], [0, 2], [-2, -2], [2, -2], [-2, 2], [2, 2]];
 const TITLE = 'Spelling Check';
-const CARD_BORDER = '#FFE08A';
 const RIGHT_BG = '#E3F7EC';
 const WRONG_BG = '#FDECEF';
 
@@ -129,13 +137,13 @@ const readList = (value?: string): string[] => {
 
 export default function SpellingCheck() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ words?: string; text?: string }>();
+  const params = useLocalSearchParams<{ practice?: string; words?: string; text?: string }>();
   const settings = useReadingSettings();
 
   // Make the questions once when the screen opens
   const questions = useMemo<Question[]>(
     () =>
-      pickWords(readList(params.words), params.text ?? '').map((word) => ({
+      pickWords(readList(params.practice), readList(params.words), params.text ?? '').map((word) => ({
         word,
         options: shuffle([word, ...makeWrongSpellings(word)]),
       })),
@@ -146,7 +154,6 @@ export default function SpellingCheck() {
   const [index, setIndex] = useState(0);
   const [picked, setPicked] = useState<string | null>(null);
   const [correctCount, setCorrectCount] = useState(0);
-  const [finished, setFinished] = useState(false);
   const wrongWords = useRef<string[]>([]);
   const startedAt = useRef(Date.now());
   const lastAnswerAt = useRef(Date.now());
@@ -165,7 +172,13 @@ export default function SpellingCheck() {
   const handleSpeak = () => {
     if (!question) return;
     stopVoice();
-    stopVoiceRef.current = speakWord(question.word, { rate: SLOW_RATE, onLoading: setVoiceLoading });
+    // Slow speed: phone voice 0.25, Azure 0.5x played at half speed (pitch corrected)
+    stopVoiceRef.current = speakWord(question.word, {
+      rate: SLOW_SPEED.rate,
+      azureSpeed: SLOW_SPEED.azureSpeed,
+      playbackRate: SLOW_SPEED.playback,
+      onLoading: setVoiceLoading,
+    });
   };
   // Stop the voice when the question changes or the screen closes
   useEffect(() => () => stopVoice(), [index]);
@@ -207,6 +220,20 @@ export default function SpellingCheck() {
     }
   };
 
+  // Open Fill the Gap with the page text and the spelling score.
+  // replace: Back from Fill the Gap goes to the reading page, not to these questions.
+  const goToFillTheGap = (correct: number) => {
+    stopVoice();
+    router.replace({
+      pathname: NEXT_SCREEN,
+      params: {
+        text: params.text ?? '',
+        spellingCorrect: String(correct),
+        spellingTotal: String(total),
+      },
+    });
+  };
+
   const handleNext = () => {
     stopVoice();
     if (index + 1 < total) {
@@ -214,25 +241,21 @@ export default function SpellingCheck() {
       setPicked(null);
       return;
     }
-    setFinished(true);
+    // Last question: save (never blocks), then go on to Fill the Gap
     saveResults(correctCount);
+    goToFillTheGap(correctCount);
   };
 
-  // Go to the next screen and clear the reading screens from history
-  const goToNextScreen = () => {
-    stopVoice();
-    if (router.canDismiss()) router.dismissAll();
-    router.replace(NEXT_SCREEN);
-  };
+  // No usable words for spelling: go straight to Fill the Gap
+  useEffect(() => {
+    if (total === 0) goToFillTheGap(0);
+  }, []);
 
   const optionTextStyle = {
     fontFamily: readingFontFamily(settings.font),
     fontSize: settings.textSize,
     letterSpacing: settings.letterSpacing,
   };
-
-  const percent = total > 0 ? Math.round((correctCount / total) * 100) : 0;
-  const stars = starsFor(percent);
 
   return (
     <LinearGradient
@@ -269,45 +292,8 @@ export default function SpellingCheck() {
           </View>
 
           {total === 0 ? (
-            /* No usable words on this page */
-            <>
-              <View style={styles.messageBox}>
-                <Text style={styles.messageText}>No words to practise this time.</Text>
-              </View>
-              <Pressable
-                style={({ pressed }) => [styles.button, pressed && styles.pressed]}
-                onPress={goToNextScreen}
-              >
-                <Text style={styles.buttonText}>NEXT</Text>
-                <Ionicons name="arrow-forward" size={22} color={colors.brown} />
-              </Pressable>
-            </>
-          ) : finished ? (
-            /* Result */
-            <>
-              <View style={styles.resultCard}>
-                <View style={styles.stars}>
-                  {[1, 2, 3].map((n) => (
-                    <Ionicons
-                      key={n}
-                      name={n <= stars ? 'star' : 'star-outline'}
-                      size={48}
-                      color={colors.yellow}
-                    />
-                  ))}
-                </View>
-                <Text style={styles.resultText}>
-                  You got {correctCount} out of {total}!
-                </Text>
-              </View>
-              <Pressable
-                style={({ pressed }) => [styles.button, pressed && styles.pressed]}
-                onPress={goToNextScreen}
-              >
-                <Text style={styles.buttonText}>NEXT</Text>
-                <Ionicons name="arrow-forward" size={22} color={colors.brown} />
-              </Pressable>
-            </>
+            /* No usable words: moving on to Fill the Gap */
+            <ActivityIndicator size="large" color={colors.orangeDark} style={styles.loader} />
           ) : (
             /* Question */
             <>
@@ -490,24 +476,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   rightText: { fontFamily: fonts.bold, color: colors.doctorGreen },
-  resultCard: {
-    alignItems: 'center',
-    backgroundColor: colors.cardCream,
-    borderWidth: 2,
-    borderColor: CARD_BORDER,
-    borderRadius: 22,
-    paddingVertical: 28,
-    paddingHorizontal: 20,
-    marginTop: 12,
-  },
-  stars: { flexDirection: 'row', gap: 8 },
-  resultText: {
-    fontFamily: fonts.bold,
-    fontSize: 24,
-    color: colors.navy,
-    textAlign: 'center',
-    marginTop: 14,
-  },
+  loader: { marginVertical: 40 },
   button: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -48,17 +48,25 @@ export const DEFAULT_SETTINGS: ReadingSettings = {
 };
 
 // The 3 read-aloud speeds (shared by the reading screen and this settings screen).
-// rate = how fast the voice reads (1 = normal speed)
+// rate       = phone voice speed (1 = normal speed)
+// azureSpeed = which Azure speed the "tts" server makes: 0 = -50% (0.5x), 1 = -25% (0.75x)
+// playback   = how fast the Azure audio is played (0.5 = half speed, pitch corrected)
+// Azure cannot go below 0.5x, so Slow = Azure 0.5x played at 0.5 = 0.25 in total.
 export const SPEED_OPTIONS: {
   value: SpeechSpeed;
   label: string;
   rate: number;
   note: string;
+  azureSpeed: 0 | 1 | 2;
+  playback: number;
 }[] = [
-  { value: 0, label: 'Slow', rate: 0.75, note: '0.75x' },
-  { value: 1, label: 'Normal', rate: 1.0, note: '1x' },
-  { value: 2, label: 'Fast', rate: 1.25, note: '1.25x' },
+  { value: 0, label: 'Slow', rate: 0.25, note: '0.25x', azureSpeed: 0, playback: 0.5 },
+  { value: 1, label: 'Normal', rate: 0.5, note: '0.5x', azureSpeed: 0, playback: 1 },
+  { value: 2, label: 'Fast', rate: 0.75, note: '0.75x', azureSpeed: 1, playback: 1 },
 ];
+
+// The Slow speed (used by the 🔊 single word)
+export const SLOW_SPEED = SPEED_OPTIONS[0];
 
 const FONT_OPTIONS: { value: ReadingFont; label: string; family: string }[] = [
   { value: 'Lexend', label: 'Lexend', family: fonts.bold },
@@ -233,6 +241,28 @@ export function makeChunks(text: string): string[][] {
   return chunks;
 }
 
+// Split one word into tappable pieces: the word part and its . , ! ? : ; marks.
+// "end."  -> [end] [.]      "$20." -> [$20] [.]      quotes/brackets stay with the word.
+// punct = true for a mark that can be tapped on its own.
+const PUNCT = /[.,!?:;]/;
+export function splitPunctuation(word: string): { text: string; punct: boolean }[] {
+  const first = word.search(/[A-Za-z0-9]/);
+  if (first < 0) return [{ text: word, punct: false }]; // only symbols: one piece
+  let last = word.length - 1;
+  while (!/[A-Za-z0-9]/.test(word[last])) last -= 1;
+
+  const pieces: { text: string; punct: boolean }[] = [];
+  const add = (text: string, punct: boolean) => {
+    const previous = pieces[pieces.length - 1];
+    if (!punct && previous && !previous.punct) previous.text += text;
+    else pieces.push({ text, punct });
+  };
+  for (const ch of word.slice(0, first)) add(ch, PUNCT.test(ch));
+  add(word.slice(first, last + 1), false);
+  for (const ch of word.slice(last + 1)) add(ch, PUNCT.test(ch));
+  return pieces;
+}
+
 export function EasyReadText({
   text,
   settings,
@@ -296,9 +326,19 @@ export function EasyReadText({
                   maxFontSizeMultiplier={MAX_TEXT_SCALE}
                   android_hyphenationFrequency="none"
                   textBreakStrategy="simple"
-                  onPress={onWordPress ? () => onWordPress(word, index) : undefined}
                 >
-                  {word}
+                  {onWordPress
+                    ? // Tappable pieces: the word opens the word popup,
+                      // a . , ! ? : ; mark opens a popup for that mark
+                      splitPunctuation(word).map((piece, k) => (
+                        <Text
+                          key={k}
+                          onPress={() => onWordPress(piece.punct ? piece.text : word, index)}
+                        >
+                          {piece.text}
+                        </Text>
+                      ))
+                    : word}
                 </Text>
               );
             })}

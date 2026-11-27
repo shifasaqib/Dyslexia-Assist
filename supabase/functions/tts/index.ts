@@ -25,9 +25,9 @@ const TIMEOUT_MS = 60000;
 // Reading speed (Feature 5): 0 = Slow, 1 = Normal, 2 = Fast.
 // rate is how Azure changes the speed; name is the folder for the saved copies.
 const SPEEDS = [
-  { name: 'slow', rate: '-25%' }, // 0.75x
-  { name: 'normal', rate: '0%' }, // 1x
-  { name: 'fast', rate: '+25%' }, // 1.25x
+  { name: 'slow', rate: '-50%' }, // 0.5x (Azure's slowest)
+  { name: 'normal', rate: '-25%' }, // 0.75x
+  { name: 'fast', rate: '0%' }, // 1x
 ];
 type Speed = (typeof SPEEDS)[number];
 

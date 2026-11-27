@@ -116,7 +116,8 @@ export default function Result() {
   // The chosen child's font and spacing (display only)
   const readingSettings = useReadingSettings();
   // Tap a word: syllable popup + save to difficult_words
-  const words = useWordBreakdown(readingSettings);
+  // Tap a word: popup + save it (and its exact sentence) as a difficult word
+  const words = useWordBreakdown(readingSettings, shownText);
 
   // Read aloud: idle / playing / paused
   const [readStatus, setReadStatus] = useState<SpeechStatus>('idle');
@@ -150,8 +151,8 @@ export default function Result() {
 
   const handleReadAloud = () => {
     setMessage('');
-    // How fast to read: Slow 0.75 / Normal 1 / Fast 1.25
-    const rate = SPEED_OPTIONS.find((o) => o.value === speechSpeed)?.rate ?? 1.0;
+    // How fast to read: Slow 0.25 / Normal 0.5 / Fast 0.75
+    const option = SPEED_OPTIONS.find((o) => o.value === speechSpeed) ?? SPEED_OPTIONS[1];
     startReading(
       shownText,
       {
@@ -160,7 +161,8 @@ export default function Result() {
         onError: (errorMessage) => setMessage(errorMessage ?? VOICE_NOT_READY),
         onNotice: setMessage, // e.g. "Using phone voice." when Azure is not available
       },
-      { rate, speed: speechSpeed } // rate for the phone voice, speed level for Azure
+      // rate for the phone voice; Azure speed + playback speed for Azure
+      { rate: option.rate, speed: option.azureSpeed, playbackRate: option.playback }
     );
   };
 
@@ -381,7 +383,11 @@ export default function Result() {
                 stopReading();
                 router.push({
                   pathname: '/spelling-check',
-                  params: { words: JSON.stringify(words.getTappedWords()), text: shownText },
+                  params: {
+                    practice: JSON.stringify(words.getPracticeWords()),
+                    words: JSON.stringify(words.getTappedWords()),
+                    text: shownText,
+                  },
                 });
               }}
             >

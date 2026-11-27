@@ -1,10 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
-import { readingFontFamily, type ReadingSettings, SPEED_OPTIONS } from '../app/reading-settings';
+import { readingFontFamily, type ReadingSettings, SLOW_SPEED } from '../app/reading-settings';
 import { colors, fonts } from '../constants/theme';
 import { getChosenChild } from './child';
-import { pauseReading, speakWord } from './speech';
+import { OVERLAY_MARK, pauseReading, speakWord, toSpokenText } from './speech';
 import { supabase } from './supabase';
 
 /* =====================================================================
@@ -42,6 +42,11 @@ export const FIX_LIST: Record<string, string> = {
 const trimPunctuation = (word: string) =>
   word.replace(/^[^A-Za-z0-9]+/, '').replace(/[^A-Za-z0-9]+$/, '');
 
+// For items with numbers: remove only sentence punctuation (, . ! ? : ; quotes, brackets)
+// and KEEP symbols like % $ # + = @ & /  ->  "($20)," -> "$20", "50%." -> "50%"
+const trimSentencePunctuation = (word: string) =>
+  word.replace(/^[.,!?:;"'“”‘’()[\]]+/, '').replace(/[.,!?:;"'“”‘’()[\]]+$/, '');
+
 // Split one part with no dashes (FIX LIST first, then hyphen).
 // Keeps the original capital letters.
 const splitPart = (part: string): string[] => {
@@ -63,6 +68,11 @@ const splitPart = (part: string): string[] => {
 // splitSyllables("Elephant,") -> { word: "Elephant", parts: ["El", "e", "phant"] }
 // Numbers and one-syllable words come back as one part.
 export function splitSyllables(original: string): { word: string; parts: string[] } {
+  // Numbers keep their symbols: "50%" and "$20" are shown in full (one part)
+  if (/\d/.test(original)) {
+    const item = trimSentencePunctuation(original) || original;
+    return { word: item, parts: [item] };
+  }
   const word = trimPunctuation(original) || original;
   if (/\d/.test(word) || !/[A-Za-z]/.test(word)) {
     return { word, parts: [word] };
@@ -140,20 +150,107 @@ export function checkSyllables() {
 const PART_COLORS = [colors.title, '#1E88D9', colors.doctorGreen, colors.orangeDark, '#8E5BD9'];
 const CARD_BORDER = '#FFE08A';
 const OVERLAY = 'rgba(11, 42, 74, 0.55)';
-// The word is said at the Slow read-aloud speed
-const SLOW_RATE = SPEED_OPTIONS.find((o) => o.value === 0)?.rate ?? 0.75;
+// Add to practice: up to 10 real words (4+ letters, letters only) per reading page
+const MAX_PRACTICE = 10;
+const PRACTICE_FULL =
+  "You've added 10 words, that's the most for one practice! Finish this practice, then scan the page again to practise more.";
+export const canPractise = (word: string) => {
+  const clean = cleanWord(word);
+  return clean !== null && /^[a-z]+$/.test(clean) && clean.length >= 4;
+};
+
+// Names of symbols and punctuation, said by 🔊 when only a symbol is tapped
+const SYMBOL_NAMES: Record<string, string> = {
+  ',': 'comma',
+  '.': 'full stop',
+  '!': 'exclamation mark',
+  '?': 'question mark',
+  ':': 'colon',
+  ';': 'semicolon',
+  '@': 'at sign',
+  '&': 'and sign',
+  '#': 'hash',
+  '%': 'percent',
+  '+': 'plus',
+  '=': 'equals',
+  $: 'dollar',
+  '/': 'slash',
+  '-': 'dash',
+  '"': 'quote',
+  // Maths symbols
+  '×': 'times',
+  '✕': 'times',
+  '✖': 'times',
+  '–': 'dash',
+  '—': 'dash',
+  '÷': 'divided by',
+  '−': 'minus',
+  '±': 'plus or minus',
+  '^': 'to the power of',
+  '√': 'square root',
+  '<': 'less than',
+  '>': 'greater than',
+  '≤': 'less than or equal to',
+  '≥': 'greater than or equal to',
+  '≠': 'not equal to',
+  ǂ: 'not equal to',
+  '≈': 'approximately equal to',
+  π: 'pi',
+  '°': 'degrees',
+  '½': 'one half',
+  '¼': 'one quarter',
+  '¾': 'three quarters',
+};
+
+// The "plain" form of a special character (maths-font "𝜋" -> "π")
+const plainForm = (ch: string) => {
+  try {
+    return ch.normalize('NFKC');
+  } catch {
+    return ch;
+  }
+};
+
+// What 🔊 says: the word, a number with its symbols in written order
+// ("$20" -> "dollar 20", "50%" -> "50 percent", same as page reading),
+// or the name of a symbol ("," -> "comma")
+const speechFor = (tapped: string, word: string) => {
+  // Numbers and words: symbols inside are said as words, like READ TO ME
+  // ("and/or" -> "and slash or", "me@home" -> "me at home")
+  if (/[A-Za-z0-9]/.test(tapped)) return toSpokenText(word).spoken.replace(/\s+/g, ' ').trim();
+  // A symbol alone: its name ("," -> "comma"). Look-alikes from scanned pages
+  // (maths-font pi, "≠" written in two parts) go through the same rules as READ TO ME.
+  if (!OVERLAY_MARK.test(tapped)) {
+    const names = [...tapped.trim()]
+      .map((ch) => SYMBOL_NAMES[ch] ?? SYMBOL_NAMES[plainForm(ch)])
+      .filter(Boolean);
+    if (names.length > 0) return names.join(' ');
+  }
+  const spoken = toSpokenText(tapped).spoken.replace(/\s+/g, ' ').trim();
+  return /[A-Za-z]/.test(spoken) ? spoken : word;
+};
 
 function WordPopup({
   word,
   settings,
   onClose,
+  practiceAdded,
+  showPractice,
+  practiceNote,
+  onTogglePractice,
 }: {
   word: string | null;
   settings: ReadingSettings;
   onClose: () => void;
+  practiceAdded: boolean;
+  showPractice: boolean;
+  practiceNote: string;
+  onTogglePractice: () => void;
 }) {
   const split = word ? splitSyllables(word) : null;
   const count = split?.parts.length ?? 0;
+  // Only a symbol or punctuation mark (e.g. "."): show its name instead of "1 part"
+  const symbolName = word && !/[A-Za-z0-9]/.test(word) ? speechFor(word, word) : '';
 
   // 🔊 voice for this word (Azure first, phone voice as backup)
   const [voiceLoading, setVoiceLoading] = useState(false);
@@ -167,9 +264,15 @@ function WordPopup({
 
   // A second tap restarts the word (the old voice is stopped first)
   const handleSpeak = () => {
-    if (!split) return;
+    if (!split || !word) return;
     stopVoice();
-    stopVoiceRef.current = speakWord(split.word, { rate: SLOW_RATE, onLoading: setVoiceLoading });
+    // Slow speed: phone voice 0.25, Azure 0.5x played at half speed (pitch corrected)
+    stopVoiceRef.current = speakWord(speechFor(word, split.word), {
+      rate: SLOW_SPEED.rate,
+      azureSpeed: SLOW_SPEED.azureSpeed,
+      playbackRate: SLOW_SPEED.playback,
+      onLoading: setVoiceLoading,
+    });
   };
 
   const handleClose = () => {
@@ -209,7 +312,19 @@ function WordPopup({
                 ))}
               </Text>
 
-              <Text style={popupStyles.count}>{count === 1 ? '1 part' : `${count} parts`}</Text>
+              <Text style={popupStyles.count}>
+                {symbolName !== '' ? symbolName : count === 1 ? '1 part' : `${count} parts`}
+              </Text>
+
+              {/* TEMPORARY helper (remove after testing): the exact codes of a tapped symbol */}
+              {word && !/[A-Za-z0-9]/.test(word) && (
+                <Text style={popupStyles.loadingText}>
+                  Code:{' '}
+                  {[...word]
+                    .map((c) => 'U+' + (c.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0'))
+                    .join(' ')}
+                </Text>
+              )}
 
               <View style={popupStyles.buttonRow}>
                 {/* 🔊 say the word slowly (spinner while Azure loads) */}
@@ -225,15 +340,37 @@ function WordPopup({
                   )}
                 </Pressable>
 
-                <Pressable
-                  style={({ pressed }) => [popupStyles.button, pressed && popupStyles.pressed]}
-                  onPress={handleClose}
-                >
-                  <Text style={popupStyles.buttonText}>CLOSE</Text>
-                </Pressable>
+                {/* ➕ Add to practice / ✓ Added (only for real words, 4+ letters) */}
+                {showPractice && (
+                  <Pressable
+                    style={({ pressed }) => [
+                      popupStyles.practice,
+                      practiceAdded && popupStyles.practiceAdded,
+                      pressed && popupStyles.pressed,
+                    ]}
+                    onPress={onTogglePractice}
+                  >
+                    <Ionicons
+                      name={practiceAdded ? 'checkmark-circle' : 'add-circle'}
+                      size={22}
+                      color={practiceAdded ? colors.doctorGreen : colors.navy}
+                    />
+                    <Text numberOfLines={1} adjustsFontSizeToFit style={popupStyles.practiceText}>
+                      {practiceAdded ? 'Added' : 'Add to practice'}
+                    </Text>
+                  </Pressable>
+                )}
               </View>
 
               {voiceLoading && <Text style={popupStyles.loadingText}>Getting the voice ready…</Text>}
+              {practiceNote !== '' && <Text style={popupStyles.note}>{practiceNote}</Text>}
+
+              <Pressable
+                style={({ pressed }) => [popupStyles.button, pressed && popupStyles.pressed]}
+                onPress={handleClose}
+              >
+                <Text style={popupStyles.buttonText}>CLOSE</Text>
+              </Pressable>
             </>
           )}
         </View>
@@ -242,16 +379,73 @@ function WordPopup({
   );
 }
 
+// Fill-in-the-Blanks (Marium): find the EXACT sentence of the page that the tapped word is in.
+// wordNumber = the word's number in the whole text (0 = first word), as EasyReadText sends it.
+// The sentence is copied from the text as it is (nothing is changed or made up).
+// Returns null if it cannot be found, or if the word is not really inside it.
+export function sentenceAt(text: string, wordNumber: number, clean: string): string | null {
+  // Where the tapped word starts and ends in the text
+  let count = -1;
+  let start = -1;
+  let end = -1;
+  for (const match of text.matchAll(/\S+/g)) {
+    count += 1;
+    if (count === wordNumber) {
+      start = match.index ?? 0;
+      end = start + match[0].length;
+      break;
+    }
+  }
+  if (start < 0) return null;
+
+  // Back to the start of the sentence (just after . ! ? or a new line)
+  let from = start;
+  while (from > 0 && !/[.!?\n]/.test(text[from - 1])) from -= 1;
+
+  // Forward to the end of the sentence (. ! ? and any closing quote/bracket, or a new line)
+  let to = start;
+  while (to < text.length && !/[.!?\n]/.test(text[to])) to += 1;
+  while (to < text.length && /[.!?"”'’)\]]/.test(text[to])) to += 1;
+  if (to < end) to = end;
+
+  const sentence = text.slice(from, to).trim();
+  if (sentence === '' || sentence.length > 500) return null;
+
+  // Safety check: the tapped word must really be one of the sentence's words
+  const sentenceWords = sentence.split(/\s+/).map(cleanWord);
+  return sentenceWords.includes(clean) ? sentence : null;
+}
+
 // Hook for the reading screen: gives onWordPress for EasyReadText and the popup.
 // Each word is saved only once per visit. Saving never blocks the child.
-export function useWordBreakdown(settings: ReadingSettings) {
+// text = the page text on screen (used to save the exact sentence for Fill-in-the-Blanks).
+export function useWordBreakdown(settings: ReadingSettings, text?: string) {
   const [tapped, setTapped] = useState<string | null>(null);
   const savedThisVisit = useRef(new Set<string>());
   // Every word tapped on this page (cleaned, in tap order, no duplicates).
   // Used by the Spelling Check after reading.
   const tappedThisVisit = useRef<string[]>([]);
+  // Words added to practice on THIS page (max 10). A new page starts empty.
+  const [practice, setPractice] = useState<string[]>([]);
+  const [practiceNote, setPracticeNote] = useState('');
 
-  const saveWord = async (clean: string) => {
+  // ➕ adds the tapped word, ✓ (tap again) removes it. The 11th word is not added.
+  const togglePractice = () => {
+    if (!tapped || !canPractise(tapped)) return;
+    const clean = cleanWord(tapped) as string;
+    if (practice.includes(clean)) {
+      setPractice(practice.filter((w) => w !== clean));
+      setPracticeNote('');
+      return;
+    }
+    if (practice.length >= MAX_PRACTICE) {
+      setPracticeNote(PRACTICE_FULL);
+      return;
+    }
+    setPractice([...practice, clean]);
+  };
+
+  const saveWord = async (clean: string, sentence: string | null) => {
     try {
       const childId = await getChosenChild();
       if (!childId) return;
@@ -260,30 +454,58 @@ export function useWordBreakdown(settings: ReadingSettings) {
         p_word: clean,
       });
       // Not saved: allow it to be saved on the next tap
-      if (error) savedThisVisit.current.delete(clean);
+      if (error) {
+        savedThisVisit.current.delete(clean);
+        return;
+      }
+      // Fill-in-the-Blanks: also keep the exact sentence (a failure here never bothers the child)
+      if (sentence) {
+        await supabase.rpc('save_word_sentence', {
+          p_child_id: childId,
+          p_word: clean,
+          p_sentence: sentence,
+        });
+      }
     } catch {
       savedThisVisit.current.delete(clean);
     }
   };
 
-  const onWordPress = (word: string) => {
+  const onWordPress = (word: string, index?: number) => {
     // If the page is being read aloud, pause it (it keeps its place for PLAY)
     pauseReading();
     setTapped(word);
+    setPracticeNote('');
     const clean = cleanWord(word);
     if (clean && !tappedThisVisit.current.includes(clean)) {
       tappedThisVisit.current.push(clean);
     }
     if (!clean || savedThisVisit.current.has(clean)) return;
     savedThisVisit.current.add(clean);
-    saveWord(clean);
+    const sentence = text && index !== undefined ? sentenceAt(text, index, clean) : null;
+    saveWord(clean, sentence);
   };
 
-  const popup = <WordPopup word={tapped} settings={settings} onClose={() => setTapped(null)} />;
+  const tappedClean = tapped ? cleanWord(tapped) : null;
+  const popup = (
+    <WordPopup
+      word={tapped}
+      settings={settings}
+      onClose={() => {
+        setTapped(null);
+        setPracticeNote('');
+      }}
+      showPractice={tapped !== null && canPractise(tapped)}
+      practiceAdded={tappedClean !== null && practice.includes(tappedClean)}
+      practiceNote={practiceNote}
+      onTogglePractice={togglePractice}
+    />
+  );
 
   const getTappedWords = () => [...tappedThisVisit.current];
+  const getPracticeWords = () => [...practice];
 
-  return { onWordPress, popup, getTappedWords };
+  return { onWordPress, popup, getTappedWords, getPracticeWords };
 }
 
 const popupStyles = StyleSheet.create({
@@ -336,8 +558,37 @@ const popupStyles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  button: {
+  practice: {
     flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    minHeight: 56,
+    paddingHorizontal: 12,
+    borderRadius: 18,
+    backgroundColor: colors.parentIconBg,
+    borderWidth: 2,
+    borderColor: colors.yellow,
+  },
+  practiceAdded: { backgroundColor: '#E3F7EC', borderColor: colors.doctorGreen },
+  practiceText: { flexShrink: 1, fontFamily: fonts.bold, fontSize: 15, color: colors.navy },
+  note: {
+    alignSelf: 'stretch',
+    fontFamily: fonts.semiBold,
+    fontSize: 13,
+    lineHeight: 20,
+    color: colors.navy,
+    textAlign: 'center',
+    backgroundColor: colors.parentIconBg,
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginTop: 12,
+    overflow: 'hidden',
+  },
+  button: {
+    alignSelf: 'stretch',
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 16,
@@ -345,6 +596,7 @@ const popupStyles = StyleSheet.create({
     backgroundColor: colors.orange,
     borderBottomWidth: 6,
     borderBottomColor: colors.orangeDark,
+    marginTop: 16,
   },
   loadingText: {
     fontFamily: fonts.semiBold,

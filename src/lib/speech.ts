@@ -35,8 +35,9 @@ type ReadingCallbacks = {
    ===================================================================== */
 
 let status: SpeechStatus = 'idle';
-let rate = 1.0; // phone voice speed (0.75 / 1 / 1.25)
-let speedLevel = 1; // Azure speed level sent to the server (0 = Slow, 1 = Normal, 2 = Fast)
+let rate = 1.0; // phone voice speed (0.25 / 0.5 / 0.75)
+let speedLevel = 1; // Azure speed sent to the server (0 = -50%, 1 = -25%, 2 = 0%)
+let playback = 1; // how fast the Azure audio is played (0.5 for Slow, pitch corrected)
 let callbacks: ReadingCallbacks | null = null;
 // Every start/stop gets a new number, so late events from an old reading are ignored
 let session = 0;
@@ -46,8 +47,208 @@ const setStatus = (next: SpeechStatus) => {
   callbacks?.onStatus(next);
 };
 
-// Tell the screen which word is being spoken (position in the full text)
-const reportWord = (charIndex: number | null) => callbacks?.onWord?.(charIndex);
+/* Special characters: symbols are spoken as words ("&" -> "and").
+   The voices read the "spoken" text. spokenMap[i] = where letter i of the
+   spoken text came from in the page text, so the highlight stays on the
+   original symbol on screen. Punctuation (, . ! ? : ;) is not changed:
+   the voices only pause at it. */
+const SYMBOL_WORDS: Record<string, string> = {
+  '@': 'at',
+  '&': 'and',
+  '#': 'hash',
+  '%': 'percent',
+  '+': 'plus',
+  '=': 'equals',
+  $: 'dollar',
+  '/': 'slash',
+  // Maths symbols
+  '×': 'times',
+  '✕': 'times', // multiply look-alikes from scanned pages
+  '✖': 'times',
+  '÷': 'divided by',
+  '−': 'minus', // the real maths minus sign (not the normal dash)
+  '±': 'plus or minus',
+  '^': 'to the power of',
+  '√': 'square root of',
+  '<': 'less than',
+  '>': 'greater than',
+  '≤': 'less than or equal to',
+  '≥': 'greater than or equal to',
+  '≠': 'not equal to',
+  ǂ: 'not equal to', // look-alike from scanned pages: "=" with a straight line through it
+  '≈': 'approximately equal to',
+  π: 'pi',
+  '°': 'degrees',
+  '½': 'one half',
+  '¼': 'one quarter',
+  '¾': 'three quarters',
+};
+let spokenMap: number[] = [];
+
+// Any space counts, also the "non-breaking" spaces that scanned pages often have
+const isSpace = (ch: string | undefined) => ch !== undefined && /\s/.test(ch);
+
+// The nearest character before / after position i that is not a space
+const charBefore = (text: string, i: number) => {
+  let j = i - 1;
+  while (j >= 0 && isSpace(text[j])) j -= 1;
+  return j >= 0 ? text[j] : '';
+};
+const charAfter = (text: string, i: number) => {
+  let j = i + 1;
+  while (j < text.length && isSpace(text[j])) j += 1;
+  return j < text.length ? text[j] : '';
+};
+const isDigit = (ch: string) => /\d/.test(ch);
+
+// The normal dash and its look-alikes from scanned pages (en dash, em dash, figure dash, ...)
+const DASHES = '-–—‒‑';
+
+// Characters that are only maths in some places (so words like "well-known",
+// ranges like "5-10" and words with "x" are never changed):
+//  dash -> "minus" for "5 - 3" (spaces, numbers both sides) or "-5" (start of a word)
+//  "*"  -> "times" between numbers ("5 * 3", "5*3")
+//  "·"  -> "times" between numbers ("5 · 3")
+//  "x"  -> "times" alone between numbers with spaces ("3 x 4")
+const mathsWordAt = (text: string, i: number): string | null => {
+  const ch = text[i];
+  const betweenNumbers = isDigit(charBefore(text, i)) && isDigit(charAfter(text, i));
+  const spacedNumbers = isSpace(text[i - 1]) && isSpace(text[i + 1]) && betweenNumbers;
+  if (DASHES.includes(ch)) {
+    if (spacedNumbers) return 'minus';
+    if ((i === 0 || isSpace(text[i - 1]) || text[i - 1] === '(') && isDigit(text[i + 1] ?? '')) {
+      return 'minus';
+    }
+  }
+  if ((ch === '*' || ch === '·' || ch === '⋅') && betweenNumbers) return 'times';
+  if ((ch === 'x' || ch === 'X') && spacedNumbers) return 'times';
+  return null;
+};
+
+// Turn a number into English words (our own simple code):
+// "20" -> "twenty", "1,200" -> "one thousand two hundred", "5.50" -> "five point five zero"
+const ONES = [
+  'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen',
+];
+const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+
+const underThousand = (n: number): string => {
+  const words: string[] = [];
+  if (n >= 100) {
+    words.push(`${ONES[Math.floor(n / 100)]} hundred`);
+    n %= 100;
+  }
+  if (n >= 20) {
+    words.push(TENS[Math.floor(n / 10)] + (n % 10 ? ` ${ONES[n % 10]}` : ''));
+  } else if (n > 0) {
+    words.push(ONES[n]);
+  }
+  return words.join(' ');
+};
+
+export function numberToWords(number: string): string {
+  const [whole, decimals] = number.replace(/,/g, '').split('.');
+  let n = Number(whole);
+  if (!Number.isFinite(n) || whole.length > 12) return number; // too big: leave as it is
+  const parts: string[] = [];
+  for (const [size, name] of [[1e9, 'billion'], [1e6, 'million'], [1e3, 'thousand']] as const) {
+    if (n >= size) {
+      parts.push(`${underThousand(Math.floor(n / size))} ${name}`);
+      n %= size;
+    }
+  }
+  if (n > 0 || parts.length === 0) parts.push(n === 0 ? 'zero' : underThousand(n));
+  let result = parts.join(' ');
+  if (decimals) result += ' point ' + [...decimals].map((d) => ONES[Number(d)]).join(' ');
+  return result;
+}
+
+// The "plain" form of a special character from a scanned page,
+// e.g. a maths-font pi "𝜋" -> "π". If the phone cannot do it, keep the character.
+const plainForm = (ch: string) => {
+  try {
+    return ch.normalize('NFKC');
+  } catch {
+    return ch;
+  }
+};
+
+// Marks that are drawn ON TOP of the character before them (invisible on their own)
+export const OVERLAY_MARK = /[̀-ͯ⃐-⃿]/;
+
+export function toSpokenText(text: string): { spoken: string; map: number[] } {
+  let spoken = '';
+  const map: number[] = [];
+  // Every spoken letter remembers where it came from in the page text (for the highlight)
+  const add = (piece: string, from: number) => {
+    for (let k = 0; k < piece.length; k++) {
+      spoken += piece[k];
+      map.push(from);
+    }
+  };
+
+  let i = 0;
+  while (i < text.length) {
+    // One character (some special ones, like a maths-font pi, use 2 places in the text)
+    const ch = String.fromCodePoint(text.codePointAt(i) ?? 0);
+    const next = i + ch.length;
+
+    // "$" + number: say "dollar" + the number in words, so the voice keeps the
+    // written order ("dollar twenty") and cannot change it to "twenty dollars"
+    if (ch === '$') {
+      const money = /^\d+(,\d{3})*(\.\d+)?/.exec(text.slice(next));
+      if (money) {
+        add(` dollar ${numberToWords(money[0])} `, i); // all point back to the "$"
+        i = next + money[0].length;
+        continue;
+      }
+    }
+
+    // "≠" written in two parts: "=" + an overlay mark drawn on top of it
+    // (slash or straight line, e.g. U+0338, U+20D2, U+20D3), or typed as "=/="
+    if (ch === '=' && OVERLAY_MARK.test(text[next] ?? '')) {
+      add(' not equal to ', i);
+      i = next + 1;
+      continue;
+    }
+    if (text.startsWith('=/=', i)) {
+      add(' not equal to ', i);
+      i += 3;
+      continue;
+    }
+
+    // A scanned square root sign often comes as the letter "V" or "v" right before
+    // a number at the start of a word ("V16" -> "square root of 16")
+    if ((ch === 'V' || ch === 'v') && (i === 0 || isSpace(text[i - 1]) || text[i - 1] === '(')) {
+      if (isDigit(text[next] ?? '')) {
+        add(' square root of ', i);
+        i = next;
+        continue;
+      }
+    }
+
+    const word = SYMBOL_WORDS[ch] ?? SYMBOL_WORDS[plainForm(ch)] ?? mathsWordAt(text, i);
+    add(word ? ` ${word} ` : ch, i);
+    i = next;
+  }
+  return { spoken, map };
+}
+
+// Tell the screen which word is being spoken (position in the ORIGINAL page text)
+const reportWord = (charIndex: number | null) =>
+  callbacks?.onWord?.(charIndex === null ? null : (spokenMap[charIndex] ?? charIndex));
+
+// Play the Azure audio slower (0.5 for Slow). The pitch stays normal (no deep voice).
+// The highlight follows the audio position, so it stays in sync by itself.
+const applyPlayback = (audio: AudioPlayer, value: number) => {
+  if (value === 1) return;
+  try {
+    audio.setPlaybackRate(value, 'high');
+  } catch (e) {
+    console.log('Playback speed not set:', e);
+  }
+};
 
 /* =====================================================================
    1. PHONE VOICE (Expo Speech)
@@ -351,6 +552,7 @@ const azureStart = async (text: string) => {
       if (playback.didJustFinish) finishReading();
     });
     player.play();
+    applyPlayback(player, playback);
     setStatus('playing');
     startTicking(mySession);
   } catch (e) {
@@ -367,6 +569,7 @@ const azurePause = () => {
 const azureResume = () => {
   if (!player) return;
   player.play();
+  applyPlayback(player, playback); // some phones reset the speed on play
   setStatus('playing');
   startTicking(session);
 };
@@ -395,18 +598,23 @@ const failReading = (message?: string) => {
 export function startReading(
   text: string,
   readingCallbacks: ReadingCallbacks,
-  options?: { rate?: number; speed?: 0 | 1 | 2 }
+  options?: { rate?: number; speed?: 0 | 1 | 2; playbackRate?: number }
 ) {
   stopReading();
   callbacks = readingCallbacks;
   rate = options?.rate ?? 1.0;
   speedLevel = options?.speed ?? 1;
+  playback = options?.playbackRate ?? 1;
   session += 1;
 
+  // Read the "spoken" text (symbols as words); the highlight maps back to the page text
+  const { spoken, map } = toSpokenText(text);
+  spokenMap = map;
+
   if (ENGINE === 'azure') {
-    azureStart(text);
+    azureStart(spoken);
   } else {
-    deviceStart(text);
+    deviceStart(spoken);
   }
 }
 
@@ -472,9 +680,15 @@ const stopWordVoice = () => {
 };
 
 // Say one word slowly. Returns stop(): call it to stop this word's voice.
+// rate = phone voice speed; azureSpeed + playbackRate = Azure speed and how fast it is played.
 export function speakWord(
   word: string,
-  options: { rate: number; onLoading?: (loading: boolean) => void }
+  options: {
+    rate: number;
+    azureSpeed?: 0 | 1 | 2;
+    playbackRate?: number;
+    onLoading?: (loading: boolean) => void;
+  }
 ): () => void {
   stopWordVoice();
   wordTry += 1;
@@ -531,7 +745,7 @@ export function speakWord(
       }
 
       const { data, error } = await Promise.race([
-        supabase.functions.invoke('tts', { body: { text: word, speed: 0 } }), // 0 = Slow
+        supabase.functions.invoke('tts', { body: { text: word, speed: options.azureSpeed ?? 0 } }),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('Azure took too long')), WORD_AZURE_WAIT_MS)
         ),
@@ -550,6 +764,7 @@ export function speakWord(
         if (playback.didJustFinish && wordPlayer === player) stopWordVoice();
       });
       player.play();
+      applyPlayback(player, options.playbackRate ?? 1);
     } catch (e) {
       console.log('Azure word voice not used:', String(e));
       phoneVoice();
